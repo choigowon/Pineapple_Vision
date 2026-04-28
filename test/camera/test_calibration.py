@@ -29,6 +29,7 @@ if len(images) == 0:
 
 print(f"총 {len(images)}장의 이미지를 분석합니다...")
 
+for fname in images:
     img = cv2.imread(fname)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
