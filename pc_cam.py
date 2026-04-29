@@ -4,7 +4,7 @@ import pyttsx3
 import easyocr
 import time
 import threading
-import psutil
+import subprocess
 
 # =====================================
 # 초기 설정
@@ -35,16 +35,19 @@ last_battery_check_time = 0
 # 배터리 확인 및 음성 출력 함수
 # =====================================
 
-def check_battery():
-    battery = psutil.sensors_battery()
-    if battery is None:
-        return "배터리 정보를 확인할 수 없습니다."
-    
-    percent = battery.percent
-    power_plugged = battery.power_plugged
-    status = "충전 중" if power_plugged else "방전 중"
-    
-    return f"현재 배터리 잔량은 {percent} 퍼센트이며, {status} 상태입니다."
+def check_under_voltage():
+    try:
+        # 라즈베리 파이 전용 명령어 실행
+        result = subprocess.check_output(['vcgencmd', 'get_throttled']).decode()
+        status = int(result.split('=')[1], 16)
+        
+        # 0x1: 현재 저전압 발생 중, 0x10000: 최근에 저전압 발생했었음
+        if status & 0x1:
+            return "긴급. 전압이 낮습니다. 보조배터리를 점검하세요."
+        return None
+    except:
+        # PC(Windows) 환경에서는 에러가 나므로 무시
+        return None
     
 # =====================================
 # 거리 측정 설정
@@ -297,10 +300,16 @@ while True:
         2
     )
 
-    # 10분(600초)마다 자동으로 배터리 잔량 음성 안내
-    if current_time - last_battery_check_time > 600:
-        battery_msg = check_battery()
-        speak_async(battery_msg)
+    if current_time - last_battery_check_time > 120:
+        
+        # vcgencmd를 통해 하드웨어 전압 상태 확인
+        low_volt_msg = check_under_voltage()
+        
+        # 저전압 신호가 감지된 경우에만 음성 안내
+        if low_volt_msg:
+            print("[시스템 경고]", low_volt_msg) # 터미널 출력
+            speak_async(low_volt_msg)         # 음성 출력
+            
         last_battery_check_time = current_time
 
     cv2.imshow(
@@ -316,10 +325,6 @@ while True:
 
     if key == ord('q'):
         break
-
-    elif key == ord('b'):
-        battery_msg = check_battery()
-        speak_async(battery_msg)
 
     elif key == ord('1'):
 
