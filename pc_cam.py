@@ -4,69 +4,64 @@ import subprocess
 import cv2
 from ultralytics import YOLO
 
-# 1. 환경 설정 (라즈베리파이 CPU 가속 고정)
+# 1. 환경 변수 (이건 필수!)
 os.environ['OPENBLAS_CORETYPE'] = 'ARMV8'
 
-# 2. 모델 로드 (v10n)
-# 팁: 정확도가 정 아쉬우면 여기서 v10s.pt로 바꿔보세요 (단, 느려짐)
+# 2. 모델 로딩 (이미 검증된 v10n 사용)
 model = YOLO('yolov10n.pt') 
 
 cap = cv2.VideoCapture(0)
-WIDTH, HEIGHT = 640, 480
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
+# 해상도를 480p로 낮춰서 전송 속도 자체를 올림
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-# 중앙 집중 범위 (0.35 ~ 0.65 : 광각의 왜곡을 피해 가장 정확한 정면만 응시)
-LANE_LEFT = WIDTH * 0.35
-LANE_RIGHT = WIDTH * 0.65
+# 중앙 좁은 통로 설정 (120도 광각 대응: 중앙 30%만 집중)
+LANE_LEFT = 640 * 0.35
+LANE_RIGHT = 640 * 0.65
 
 last_msg_time = 0
+frame_count = 0
 
-print("\n🚀 [최종 진화형: YOLOv10n 중앙 집중 모드] 시작")
+print("\n🚀 [시연용 최종 버전: YOLOv10n 하이퍼 최적화] 가동")
 
 try:
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
 
-        # [최적화 핵심] 
-        # imgsz=320으로 연산량은 줄이되, 
-        # stream=True 옵션으로 메모리 점유율을 낮춰 속도를 확보합니다.
-        results = model.predict(frame, conf=0.45, imgsz=320, verbose=False, stream=True)
+        frame_count += 1
+        # [속도 향상 핵심] 3프레임당 1번만 연산 (부드러움 유지하면서 CPU 부하 감소)
+        if frame_count % 3 != 0:
+            continue
+
+        # [정확도 향상 핵심] imgsz=320으로 속도를 챙기되, 중앙만 슬라이싱해서 추론
+        # 화면 전체를 다 보지 않고 중앙 핵심 영역만 AI에게 넘깁니다.
+        roi = frame[:, int(LANE_LEFT):int(LANE_RIGHT)]
+        results = model.predict(roi, conf=0.45, imgsz=320, verbose=False)
         
+        targets = []
         for r in results:
-            # 거리순 정렬을 위해 리스트업
-            targets = []
             for box in r.boxes:
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                center_x = (x1 + x2) / 2
-                
-                # 중앙 영역 밖은 과감히 무시
-                if center_x < LANE_LEFT or center_x > LANE_RIGHT:
-                    continue
-
                 label = model.names[int(box.cls[0])]
-                w = x2 - x1
+                w = box.xyxy[0][2] - box.xyxy[0][0]
                 distance = (40 * 550) / w if w > 0 else 0
-
-                if distance < 200: # 2미터 이내
+                
+                if distance < 180:
                     targets.append((label, distance))
 
-            if targets:
-                # 가장 가까운 물체 선정
-                targets.sort(key=lambda x: x[1])
-                label, dist = targets[0]
-
-                curr_time = time.time()
-                # 안내 간격을 1.2초로 줄여 더 실시간 대응 가능하게 변경
-                if curr_time - last_msg_time > 1.2:
-                    msg = f"정면 {label} 주의"
-                    print(f"⚠️ [ALERT] {msg} ({int(dist)}cm)")
-                    # 안내는 백그라운드 실행으로 프레임 드랍 방지
-                    subprocess.Popen(['espeak', '-v', 'ko', msg])
-                    last_msg_time = curr_time
+        if targets:
+            targets.sort(key=lambda x: x[1])
+            label, dist = targets[0]
+            
+            curr_time = time.time()
+            if curr_time - last_msg_time > 1.5:
+                msg = f"정면 {label} 주의"
+                print(f"⚠️ [FINAL] {msg} ({int(dist)}cm)")
+                # 음성 안내를 별도 프로세스로 던져서 화면 끊김 방지
+                subprocess.Popen(['espeak', '-v', 'ko', msg])
+                last_msg_time = curr_time
 
 except KeyboardInterrupt:
-    print("\n👋 시스템을 종료합니다.")
+    print("\n👋 시연 종료")
 finally:
     cap.release()
