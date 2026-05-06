@@ -1,16 +1,12 @@
 import cv2
 from ultralytics import YOLO
-import pyttsx3
 import easyocr
+from tts import VoiceManager, check_under_voltage
 import time
-import threading
-import subprocess
-import queue
-
 # =====================================
 # 초기 설정
 # =====================================
-
+voice_assistant = VoiceManager()
 # YOLO Nano 모델
 model = YOLO('yolov8n.pt')
 
@@ -31,25 +27,7 @@ last_object_detection_time = 0
 last_ocr_time = 0
 last_warning_time = 0
 last_battery_check_time = 0
-
-# =====================================
-# 배터리 확인 및 음성 출력 함수
-# =====================================
-
-def check_under_voltage():
-    try:
-        # 라즈베리 파이 전용 명령어 실행
-        result = subprocess.check_output(['vcgencmd', 'get_throttled']).decode()
-        status = int(result.split('=')[1], 16)
-        
-        # 0x1: 현재 저전압 발생 중, 0x10000: 최근에 저전압 발생했었음
-        if status & 0x1:
-            return "긴급. 전압이 낮습니다. 보조배터리를 점검하세요."
-        return None
-    except:
-        # PC(Windows) 환경에서는 에러가 나므로 무시
-        return None
-    
+ 
 # =====================================
 # 거리 측정 설정
 # =====================================
@@ -57,54 +35,6 @@ def check_under_voltage():
 REAL_WIDTH = 40      # 사람 평균 어깨 너비(cm)
 FOCAL_LENGTH = 550   # 테스트용 값
 WARNING_DISTANCE = 100  # 100cm 이하 경고
-
-# =====================================
-# 음성 상태
-# =====================================
-
-is_speaking = False
-
-
-class PriorityVoiceManager:
-    def __init__(self):
-        self.queue = queue.PriorityQueue()
-        # 전용 스레드 하나만 생성
-        self.worker = threading.Thread(target=self._speech_worker, daemon=True)
-        self.worker.start()
-
-    def _speech_worker(self):
-        """큐를 감시하다가 데이터가 들어오면 음성을 출력하는 워커"""
-        while True:
-            # 큐에서 데이터를 가져올 때까지 여기서 대기 (CPU 점유율 0%)
-            priority, text = self.queue.get()
-            
-            try:
-                # [중요] 말할 때마다 엔진을 초기화하고 종료함 (라즈베리파이 안정성 핵심)
-                temp_engine = pyttsx3.init()
-                temp_engine.setProperty('rate', 250)
-                
-                temp_engine.say(text)
-                temp_engine.runAndWait()
-                
-                # 말하기가 끝나면 엔진을 완전히 해제
-                temp_engine.stop()
-                del temp_engine
-                
-            except Exception as e:
-                print(f"음성 출력 에러: {e}")
-            
-            # 작업 완료 신호 (다음 음성으로 넘어감)
-            self.queue.task_done()
-            # 엔진 정리 시간을 위해 아주 잠깐 휴식
-            time.sleep(0.1)
-
-    def speak(self, text, priority=3):
-        """외부 호출용 함수"""
-        if text:
-            self.queue.put((priority, text))
-
-# 인스턴스 생성 (프로그램 상단에 한 번만)
-voice_assistant = PriorityVoiceManager()
 
 # =====================================
 # 웹캠 연결
