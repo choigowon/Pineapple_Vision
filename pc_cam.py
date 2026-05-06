@@ -5,6 +5,7 @@ import easyocr
 import time
 import threading
 import subprocess
+import queue
 
 # =====================================
 # 초기 설정
@@ -64,41 +65,46 @@ WARNING_DISTANCE = 100  # 100cm 이하 경고
 is_speaking = False
 
 
-# =====================================
-# 음성 출력 함수
-# =====================================
+class PriorityVoiceManager:
+    def __init__(self):
+        self.queue = queue.PriorityQueue()
+        # 전용 스레드 하나만 생성
+        self.worker = threading.Thread(target=self._speech_worker, daemon=True)
+        self.worker.start()
 
-def speak(text):
+    def _speech_worker(self):
+        """큐를 감시하다가 데이터가 들어오면 음성을 출력하는 워커"""
+        while True:
+            # 큐에서 데이터를 가져올 때까지 여기서 대기 (CPU 점유율 0%)
+            priority, text = self.queue.get()
+            
+            try:
+                # [중요] 말할 때마다 엔진을 초기화하고 종료함 (라즈베리파이 안정성 핵심)
+                temp_engine = pyttsx3.init()
+                temp_engine.setProperty('rate', 250)
+                
+                temp_engine.say(text)
+                temp_engine.runAndWait()
+                
+                # 말하기가 끝나면 엔진을 완전히 해제
+                temp_engine.stop()
+                del temp_engine
+                
+            except Exception as e:
+                print(f"음성 출력 에러: {e}")
+            
+            # 작업 완료 신호 (다음 음성으로 넘어감)
+            self.queue.task_done()
+            # 엔진 정리 시간을 위해 아주 잠깐 휴식
+            time.sleep(0.1)
 
-    global is_speaking
+    def speak(self, text, priority=3):
+        """외부 호출용 함수"""
+        if text:
+            self.queue.put((priority, text))
 
-    if is_speaking:
-        return
-
-    is_speaking = True
-
-    engine = pyttsx3.init()
-
-    # 음성 속도 증가
-    engine.setProperty('rate', 250)
-
-    engine.say(text)
-
-    engine.runAndWait()
-
-    engine.stop()
-
-    is_speaking = False
-
-
-def speak_async(text):
-
-    threading.Thread(
-        target=speak,
-        args=(text,),
-        daemon=True
-    ).start()
-
+# 인스턴스 생성 (프로그램 상단에 한 번만)
+voice_assistant = PriorityVoiceManager()
 
 # =====================================
 # 웹캠 연결
@@ -205,8 +211,8 @@ while True:
                     # 3초마다 경고 음성
                     if current_time - last_warning_time > 3:
 
-                        speak_async(
-                            "경고. 사람이 가까이 있습니다"
+                        voice_assistant.speak(
+                            "경고. 사람이 가까이 있습니다", priority=1
                         )
 
                         last_warning_time = current_time
@@ -266,7 +272,7 @@ while True:
 
                     print("글자:", detected_text)
 
-                    speak_async(detected_text)
+                    voice_assistant.speak(detected_text)
 
                     last_text = detected_text
 
@@ -308,7 +314,7 @@ while True:
         # 저전압 신호가 감지된 경우에만 음성 안내
         if low_volt_msg:
             print("[시스템 경고]", low_volt_msg) # 터미널 출력
-            speak_async(low_volt_msg)         # 음성 출력
+            voice_assistant.speak(low_volt_msg, priority=1)         # 음성 출력
             
         last_battery_check_time = current_time
 
@@ -330,16 +336,16 @@ while True:
 
         mode = 1
 
-        speak_async(
-            "사물 인식 모드"
+        voice_assistant.speak(
+            "사물 인식 모드", priority=2
         )
 
     elif key == ord('2'):
 
         mode = 2
 
-        speak_async(
-            "글자 인식 모드"
+        voice_assistant.speak(
+            "글자 인식 모드", priority=2
         )
 
 # =====================================
