@@ -14,7 +14,6 @@ def get_estimated_remaining_time():
     # 0분 이하로 떨어지지 않게 조절
     remaining_minutes = max(0, remaining_minutes)
     
-    # 남은 시간을 %로 환산 (교수님께 보여주기용 수치)
     percent = int((remaining_minutes / MAX_OPERATING_MINUTES) * 100)
     
     return remaining_minutes, percent

@@ -29,15 +29,6 @@ def run_test():
         voice.speak("사람이 있습니다.", priority=3, debounce_time=3)
         time.sleep(0.1)
 
-    # 5. 전압 체크 함수 테스트
-    print("테스트 4: 전압 체크 함수")
-    volt_status = check_under_voltage()
-    if volt_status:
-        print(f"결과: {volt_status}")
-        voice.speak(volt_status, priority=1)
-    else:
-        print("결과: 정상 또는 PC 환경(Windows/Mac)입니다.")
-
     # 모든 음성이 끝날 때까지 잠시 대기
     print("\n모든 음성 요청 완료. 5초 후 테스트를 종료합니다.")
     time.sleep(5)
