@@ -84,3 +84,14 @@ class VoiceManager:
         if priority == 3:
             self.last_spoken_text = text
             self.last_spoken_time = curr_time
+
+    def emergency_reset(self):
+        """모든 음성 대기열 삭제 및 현재 음성 강제 종료"""
+        self.stop_current_voice()
+        while not self.msg_queue.empty():
+            try:
+                self.msg_queue.get_nowait()
+                self.msg_queue.task_done()
+            except queue.Empty:
+                break
+        print("시스템 음성 대기열 초기화 완료")
