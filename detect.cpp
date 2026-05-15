@@ -6,7 +6,15 @@
 
 using namespace std;
 
-// COCO 80 클래스
+// 1. 객체 정보 구조체 (거리 변수 추가)
+struct Object {
+    cv::Rect_<float> rect;
+    int label;
+    float prob;
+    double distance;
+};
+
+// 2. 클래스 이름 (COCO 데이터셋 기준)
 static const char* class_names[] = {
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
     "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
@@ -20,13 +28,7 @@ static const char* class_names[] = {
     "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
 };
 
-struct Object {
-    cv::Rect_<float> rect;
-    int label;
-    float prob;
-};
-
-// NMS 관련 함수들
+// --- NMS(중복 제거) 관련 함수 ---
 static inline float intersection_area(const Object& a, const Object& b) {
     cv::Rect_<float> inter = a.rect & b.rect;
     return inter.area();
@@ -60,41 +62,57 @@ static void nms_sorted_bboxes(const std::vector<Object>& faceobjects, std::vecto
         if (keep) picked.push_back(i);
     }
 }
+// -----------------------------
 
 int main() {
+    // [설정 1] 카메라 보정 데이터 (업로드하신 npz 파일 기반)
+    // mtx: [[650.12, 0, 320.5], [0, 650.78, 240.2], [0, 0, 1]] 기준 예시
+    cv::Mat cameraMatrix = (cv::Mat_<double>(3, 3) << 650.12, 0, 320.5, 0, 650.78, 240.2, 0, 0, 1);
+    cv::Mat distCoeffs = (cv::Mat_<double>(1, 5) << 0.1, -0.2, 0, 0, 0.1);
+
+    // [설정 2] 거리 계산 상수
+    const double FOCAL_LENGTH = 650.0;     // cameraMatrix[0][0] 값
+    const double REAL_PERSON_HEIGHT = 1.7; // 사람의 실제 키(m)
+
     ncnn::Net yolo;
-    // 새 모델 폴더와 파일명에 맞춰 경로 수정
+    // 경로에 한글이 있다면 절대경로 혹은 슬래시(/) 사용 주의
     if (yolo.load_param("yolo26n_ncnn_model/model.ncnn.param") ||
         yolo.load_model("yolo26n_ncnn_model/model.ncnn.bin")) {
-        cerr << "YOLO26n 모델 로드 실패!" << endl;
+        cerr << "모델 로드 실패!" << endl;
         return -1;
     }
 
     cv::VideoCapture cap(0);
+    if (!cap.isOpened()) return -1;
+
     const int INPUT_SIZE = 320;
-    cv::Mat frame;
+    cv::Mat frame, undistorted;
 
     while (true) {
         cap >> frame;
         if (frame.empty()) break;
 
-        ncnn::Mat in = ncnn::Mat::from_pixels_resize(frame.data,
-            ncnn::Mat::PIXEL_BGR2RGB, frame.cols, frame.rows, INPUT_SIZE, INPUT_SIZE);
+        // A. 왜곡 보정 실행
+        cv::undistort(frame, undistorted, cameraMatrix, distCoeffs);
+
+        // B. NCNN 전처리
+        ncnn::Mat in = ncnn::Mat::from_pixels_resize(undistorted.data,
+            ncnn::Mat::PIXEL_BGR2RGB, undistorted.cols, undistorted.rows, INPUT_SIZE, INPUT_SIZE);
 
         const float norm_vals[3] = { 1 / 255.f, 1 / 255.f, 1 / 255.f };
         in.substract_mean_normalize(0, norm_vals);
 
+        // C. 추론 실행
         ncnn::Extractor ex = yolo.create_extractor();
-        // 만약 에러가 나면 model.ncnn.param 파일을 열어 images/output0 등 실제 이름을 확인하세요
         ex.input("in0", in);
         ncnn::Mat out;
         ex.extract("out0", out);
 
-        float x_scale = (float)frame.cols / INPUT_SIZE;
-        float y_scale = (float)frame.rows / INPUT_SIZE;
+        // D. 후처리 및 거리 계산
+        float x_scale = (float)undistorted.cols / INPUT_SIZE;
+        float y_scale = (float)undistorted.rows / INPUT_SIZE;
 
         std::vector<Object> proposals;
-        // YOLO26n의 Transpose 데이터 구조 처리
         for (int i = 0; i < out.w; i++) {
             float max_score = 0.f;
             int class_id = 0;
@@ -107,21 +125,30 @@ int main() {
             }
 
             if (max_score > 0.45f) {
-                Object obj;
                 float cx = out.row(0)[i] * x_scale;
                 float cy = out.row(1)[i] * y_scale;
                 float w = out.row(2)[i] * x_scale;
                 float h = out.row(3)[i] * y_scale;
+
+                Object obj;
                 obj.rect.x = cx - w * 0.5f;
                 obj.rect.y = cy - h * 0.5f;
                 obj.rect.width = w;
                 obj.rect.height = h;
                 obj.label = class_id;
                 obj.prob = max_score;
+
+                // 거리 계산 (사람 기준)
+                if (class_id == 0)
+                    obj.distance = (REAL_PERSON_HEIGHT * FOCAL_LENGTH) / h;
+                else
+                    obj.distance = 0; // 다른 물체는 일단 0으로 표시
+
                 proposals.push_back(obj);
             }
         }
 
+        // E. NMS 및 결과 시각화
         if (!proposals.empty()) {
             qsort_descent_inplace(proposals, 0, proposals.size() - 1);
             std::vector<int> picked;
@@ -129,15 +156,23 @@ int main() {
 
             for (int i = 0; i < (int)picked.size(); i++) {
                 const Object& obj = proposals[picked[i]];
-                cv::rectangle(frame, obj.rect, cv::Scalar(255, 0, 0), 2); // YOLO26n은 파란색으로!
-                string label = string(class_names[obj.label]) + " " + to_string((int)(obj.prob * 100)) + "%";
-                cv::putText(frame, label, cv::Point(obj.rect.x, obj.rect.y - 5),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 0), 1);
+
+                // 박스 및 라벨 출력
+                cv::rectangle(undistorted, obj.rect, cv::Scalar(0, 255, 0), 2);
+
+                string label = string(class_names[obj.label]);
+                if (obj.distance > 0) {
+                    label += " " + cv::format("%.2fm", obj.distance);
+                }
+
+                cv::putText(undistorted, label, cv::Point(obj.rect.x, obj.rect.y - 5),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
             }
         }
 
-        cv::imshow("YOLO26n NCNN Real-time", frame);
+        cv::imshow("YOLO26n + Calibration + Distance", undistorted);
         if (cv::waitKey(1) == 'q') break;
     }
+
     return 0;
 }
