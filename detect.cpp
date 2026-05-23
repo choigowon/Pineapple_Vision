@@ -1,158 +1,194 @@
-#include <opencv2/opencv.hpp>
-#include "net.h"
-#include <iostream>
-#include <vector>
-#include <algorithm>
-#include <chrono>
+import cv2
+import numpy as np
+import threading
+import time
+import subprocess
+from ultralytics import YOLO
 
-using namespace std;
+# --- [스레드 1] 실시간 최신 화면 가로채기 스트림 ---
+class RealtimeCameraStream:
+    def __init__(self, src=0):
+        self.cap = cv2.VideoCapture(src)
+        # 카메라 기본 해상도 자체도 640으로 짱짱하게 맞춥니다.
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.ret, self.frame = self.cap.read()
+        self.started = False
+        self.read_lock = threading.Lock()
 
-struct Object {
-    cv::Rect_<float> rect;
-    int label = 0;
-    float prob = 0.0f;
-    Object() : rect(0, 0, 0, 0), label(0), prob(0.0f) {}
-};
+    def start(self):
+        if self.started: return self
+        self.started = True
+        threading.Thread(target=self.update, daemon=True).start()
+        return self
 
-static const char* class_names[] = {
-    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
-    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
-    "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
-    "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
-    "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
-    "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
-    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
-    "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
-    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator",
-    "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
-};
+    def update(self):
+        while self.started:
+            ret, frame = self.cap.read()
+            if ret:
+                with self.read_lock:
+                    self.ret = ret
+                    self.frame = frame
+            time.sleep(0.01)
 
-// NMS 관련 함수들 (안정성 강화)
-static inline float intersection_area(const Object& a, const Object& b) noexcept {
-    cv::Rect_<float> inter = a.rect & b.rect;
-    return inter.area();
-}
+    def read(self):
+        with self.read_lock:
+            return self.ret, self.frame.copy() if self.frame is not None else None
 
-static void qsort_descent_inplace(std::vector<Object>& faceobjects, int left, int right) noexcept {
-    int i = left; int j = right;
-    float p = faceobjects[static_cast<size_t>(left + right) / 2].prob;
-    while (i <= j) {
-        while (faceobjects[static_cast<size_t>(i)].prob > p) i++;
-        while (faceobjects[static_cast<size_t>(j)].prob < p) j--;
-        if (i <= j) { std::swap(faceobjects[static_cast<size_t>(i)], faceobjects[static_cast<size_t>(j)]); i++; j--; }
-    }
-    if (left < j) qsort_descent_inplace(faceobjects, left, j);
-    if (i < right) qsort_descent_inplace(faceobjects, i, right);
-}
+    def stop(self):
+        self.started = False
+        if self.cap.isOpened(): self.cap.release()
 
-static void nms_sorted_bboxes(const std::vector<Object>& faceobjects, std::vector<int>& picked, float nms_threshold) noexcept {
-    picked.clear();
-    const int n = static_cast<int>(faceobjects.size());
-    std::vector<float> areas(static_cast<size_t>(n));
-    for (int i = 0; i < n; i++) areas[static_cast<size_t>(i)] = faceobjects[static_cast<size_t>(i)].rect.area();
-    for (int i = 0; i < n; i++) {
-        const Object& a = faceobjects[static_cast<size_t>(i)];
-        int keep = 1;
-        for (int j = 0; j < (int)picked.size(); j++) {
-            const Object& b = faceobjects[static_cast<size_t>(picked[static_cast<size_t>(j)])];
-            float inter_area = intersection_area(a, b);
-            float union_area = areas[static_cast<size_t>(i)] + areas[static_cast<size_t>(picked[static_cast<size_t>(j)])] - inter_area;
-            if (inter_area / union_area > nms_threshold) keep = 0;
-        }
-        if (keep) picked.push_back(i);
-    }
-}
 
-int main() {
-    ncnn::Net yolo;
-    yolo.opt.num_threads = 4;
+# --- [스레드 2] AI 추론 백그라운드 격리 스레드 (640 풀 파워 규격 박제) ---
+class BackgroundInferenceThread:
+    def __init__(self, model_path):
+        self.model = YOLO(model_path, task='detect')
+        self.frame_to_process = None
+        self.latest_result = None
+        self.started = False
+        self.lock = threading.Lock()
 
-    if (yolo.load_param("yolo26n_ncnn_model/model.ncnn.param") ||
-        yolo.load_model("yolo26n_ncnn_model/model.ncnn.bin")) {
-        return -1;
-    }
+    def start(self):
+        if self.started: return self
+        self.started = True
+        threading.Thread(target=self.inference_loop, daemon=True).start()
+        return self
 
-    cv::VideoCapture cap(0);
-    const int INPUT_SIZE = 320;
-    cv::Mat frame;
+    def update_frame(self, frame):
+        with self.lock:
+            self.frame_to_process = frame
 
-    while (true) {
-        cap >> frame;
-        if (frame.empty()) break;
+    def get_result(self):
+        with self.lock:
+            res = self.latest_result
+            self.latest_result = None  
+            return res
 
-        auto start = chrono::steady_clock::now();
+    def inference_loop(self):
+        while self.started:
+            img = None
+            with self.lock:
+                if self.frame_to_process is not None:
+                    img = self.frame_to_process
+                    self.frame_to_process = None
 
-        ncnn::Mat in = ncnn::Mat::from_pixels_resize(frame.data,
-            ncnn::Mat::PIXEL_BGR2RGB, frame.cols, frame.rows, INPUT_SIZE, INPUT_SIZE);
-        const float norm_vals[3] = { 1 / 255.f, 1 / 255.f, 1 / 255.f };
-        in.substract_mean_normalize(0, norm_vals);
+            if img is not None:
+                # 🔥 ONNX 모델 구조 규격에 정확하게 맞춰 640으로 세팅!
+                # 해상도가 높아졌으니 노이즈 헛소리를 방지하기 위해 conf를 0.25로 조입니다.
+                results = self.model.predict(img, conf=0.25, iou=0.35, imgsz=640, stream=True, verbose=False)
+                
+                objects = []
+                for result in results:
+                    for box in result.boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        cls_id = int(box.cls[0])
+                        conf_score = float(box.conf[0])
+                        objects.append({'cls_id': cls_id, 'box': (x1, y1, x2, y2), 'conf': conf_score})
+                
+                with self.lock:
+                    self.latest_result = objects
+            else:
+                time.sleep(0.01)
 
-        ncnn::Extractor ex = yolo.create_extractor();
-        ex.input("in0", in);
-        ncnn::Mat out;
-        ex.extract("out0", out);
 
-        float x_scale = static_cast<float>(frame.cols) / INPUT_SIZE;
-        float y_scale = static_cast<float>(frame.rows) / INPUT_SIZE;
+# --- [비동기 오디오] 말하는 도중 새로운 다중 타겟 포착 시 즉시 가로채기 ---
+def speak_interrupt_async(text):
+    def run_cmd():
+        try:
+            subprocess.run(["pkill", "-9", "-f", "espeak"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.01)
+            subprocess.run(["espeak", f'"{text}"', "-s", "180"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    threading.Thread(target=run_cmd, daemon=True).start()
 
-        std::vector<Object> proposals;
-        for (int i = 0; i < out.w; i++) {
-            float max_score = 0.f;
-            int class_id = 0;
-            for (int j = 0; j < 80; j++) {
-                float score = out.row(4 + j)[i];
-                if (score > max_score) { max_score = score; class_id = j; }
-            }
 
-            if (max_score > 0.45f) {
-                Object obj;
-                float cx = out.row(0)[i] * x_scale;
-                float cy = out.row(1)[i] * y_scale;
-                float w = out.row(2)[i] * x_scale;
-                float h = out.row(3)[i] * y_scale;
-                obj.rect.x = cx - w * 0.5f;
-                obj.rect.y = cy - h * 0.5f;
-                obj.rect.width = w;
-                obj.rect.height = h;
-                obj.label = class_id;
-                obj.prob = max_score;
-                proposals.push_back(obj);
-            }
-        }
+# --- 메인 실행 엔진 ---
+def run_system():
+    infra_ai = BackgroundInferenceThread('my_fixed_yolov8s.onnx').start()
+    vs = RealtimeCameraStream(src=0).start()
+    time.sleep(1.0)
 
-        if (!proposals.empty()) {
-            qsort_descent_inplace(proposals, 0, static_cast<int>(proposals.size()) - 1);
-            std::vector<int> picked;
-            nms_sorted_bboxes(proposals, picked, 0.45f);
+    custom_classes = [
+        "door", "door", "door", "door", "curb", "stairs down", "stairs up", "ramp", "scooter",
+        "person", "bicycle", "motorcycle", "sink", "stop sign", "bench", "chair", "potted plant",
+        "tv", "laptop", "cell phone", "microwave", "bollard", "traffic cone", "utility pole",
+        "water puddle", "shelf", "stair", "tree", "car", "bus", "truck", "refrigerator", "bed",
+        "dining table", "box", "wall", "window", "wardrobe", "hanger"
+    ]
+    ignored_speech_classes = ["wall", "window", "wardrobe"]
 
-            for (int i = 0; i < (int)picked.size(); i++) {
-                const Object& obj = proposals[static_cast<size_t>(picked[static_cast<size_t>(i)])];
+    last_spoken_state = ""
+    last_spoken_time = 0
+    AUDIO_MIN_INTERVAL = 0.6  
 
-                // 시각화 복구 (사물 이름 표시)
-                cv::rectangle(frame, obj.rect, cv::Scalar(255, 0, 0), 2);
-                string label = string(class_names[obj.label]) + " " + cv::format("%.1f%%", obj.prob * 100);
-                cv::putText(frame, label, cv::Point(obj.rect.x, obj.rect.y - 5), 0, 0.5, cv::Scalar(255, 255, 255), 1);
+    print("\n" + "="*50)
+    print("🚀 [640 풀 해상도 일치 + 다중 인식 전체 출력 모드] 가동")
+    print("해상도 오동작 에러를 완벽 청소했습니다. (Ctrl + C 종료)")
+    print("="*50 + "\n")
 
-                // --- [추가] 사물 위치 판별 로직 ---
-                float center_x = obj.rect.x + (obj.rect.width / 2);
-                string position;
-                if (center_x < frame.cols / 3.0) position = "Left";
-                else if (center_x < (frame.cols / 3.0) * 2.0) position = "Center";
-                else position = "Right";
+    try:
+        while True:
+            ret, frame = vs.read()
+            if not ret or frame is None:
+                continue
 
-                // 콘솔에 출력 (예: person is on the Center)
-                if (i == 0) { // 가장 정확한 첫 번째 사물만 출력해서 콘솔이 어지럽지 않게 함
-                    cout << class_names[obj.label] << " is on the " << position << endl;
-                }
-            }
-        }
+            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            h_frame, w_frame = frame.shape[:2]
 
-        auto end = chrono::steady_clock::now();
-        float fps = 1.0f / chrono::duration<float>(end - start).count();
-        cv::putText(frame, cv::format("FPS: %.2f", fps), cv::Point(10, 30), 0, 0.8, cv::Scalar(0, 255, 0), 2);
+            infra_ai.update_frame(frame)
+            detected_boxes = infra_ai.get_result()
 
-        cv::imshow("YOLO26n Guide System", frame);
-        if (cv::waitKey(1) == 'q') break;
-    }
-    return 0;
-}
+            if detected_boxes is not None:
+                detected_objects = []
+                for obj in detected_boxes:
+                    x1, y1, x2, y2 = obj['box']
+                    class_name = custom_classes[obj['cls_id']]
+                    
+                    if class_name in ignored_speech_classes:
+                        continue  
+
+                    box_area = (x2 - x1) * (y2 - y1)
+                    area_ratio = box_area / (w_frame * h_frame)
+                    distance_status = "close" if area_ratio > 0.12 else "medium" if area_ratio > 0.03 else "far"
+
+                    detected_objects.append({
+                        'name': class_name, 'distance': distance_status, 'y2_coord': y2, 'conf': obj['conf']
+                    })
+
+                # 다중 사물 전체 출력 및 음성 조합
+                if detected_objects:
+                    detected_objects.sort(key=lambda o: o['y2_coord'], reverse=True)
+                    
+                    print(f"\n📸 [포착된 사물 명단 (총 {len(detected_objects)}개)]")
+                    for idx, obj in enumerate(detected_objects):
+                        print(f"  └ [{idx+1}] {obj['name']} ({obj['distance']}) | 확신도: {obj['conf']:.2f}")
+
+                    closest_target = detected_objects[0]
+                    speech_text = f"{closest_target['name']}, {closest_target['distance']}"
+                    
+                    if len(detected_objects) > 1:
+                        second_target = detected_objects[1]
+                        if second_target['name'] != closest_target['name']:
+                            speech_text += f" and {second_target['name']} {second_target['distance']}"
+
+                    current_time = time.time()
+                    if (speech_text != last_spoken_state) or (current_time - last_spoken_time > 1.2):
+                        if (current_time - last_spoken_time > AUDIO_MIN_INTERVAL):
+                            speak_interrupt_async(speech_text)
+                            last_spoken_state = speech_text
+                            last_spoken_time = current_time
+                else:
+                    print(".", end="", flush=True)
+            else:
+                time.sleep(0.01)
+
+    except KeyboardInterrupt:
+        print("\n종료 중...")
+    finally:
+        vs.stop()
+        infra_ai.started = False
+
+if __name__ == "__main__":
+    run_system()
