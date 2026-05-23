@@ -9,7 +9,6 @@ from ultralytics import YOLO
 class RealtimeCameraStream:
     def __init__(self, src=0):
         self.cap = cv2.VideoCapture(src)
-        # 카메라 기본 해상도 자체도 640으로 짱짱하게 맞춥니다.
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.ret, self.frame = self.cap.read()
@@ -40,7 +39,7 @@ class RealtimeCameraStream:
         if self.cap.isOpened(): self.cap.release()
 
 
-# --- [스레드 2] AI 추론 백그라운드 격리 스레드 (640 풀 파워 규격 박제) ---
+# --- [스레드 2] AI 추론 백그라운드 격리 스레드 (640 해상도) ---
 class BackgroundInferenceThread:
     def __init__(self, model_path):
         self.model = YOLO(model_path, task='detect')
@@ -74,10 +73,7 @@ class BackgroundInferenceThread:
                     self.frame_to_process = None
 
             if img is not None:
-                # 🔥 ONNX 모델 구조 규격에 정확하게 맞춰 640으로 세팅!
-                # 해상도가 높아졌으니 노이즈 헛소리를 방지하기 위해 conf를 0.25로 조입니다.
                 results = self.model.predict(img, conf=0.25, iou=0.35, imgsz=640, stream=True, verbose=False)
-                
                 objects = []
                 for result in results:
                     for box in result.boxes:
@@ -85,26 +81,39 @@ class BackgroundInferenceThread:
                         cls_id = int(box.cls[0])
                         conf_score = float(box.conf[0])
                         objects.append({'cls_id': cls_id, 'box': (x1, y1, x2, y2), 'conf': conf_score})
-                
                 with self.lock:
                     self.latest_result = objects
             else:
                 time.sleep(0.01)
 
 
-# --- [비동기 오디오] 말하는 도중 새로운 다중 타겟 포착 시 즉시 가로채기 ---
-def speak_interrupt_async(text):
-    def run_cmd():
-        try:
-            subprocess.run(["pkill", "-9", "-f", "espeak"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.01)
-            subprocess.run(["espeak", f'"{text}"', "-s", "180"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
-    threading.Thread(target=run_cmd, daemon=True).start()
+# --- [초고속 오디오 스레드 관리자] 파이썬 메모리 레벨에서 구형 음성을 즉시 폭파 ---
+class UltraFastAudioEngine:
+    def __init__(self):
+        self.current_process = None
+        self.lock = threading.Lock()
+
+    def speak_now(self, text):
+        with self.lock:
+            # 💥 다른 사물이 들어오는 순간 기존 실행 중이던 espeak 프로세스를 OS 레벨에서 즉각 강제 폭파(kill)
+            if self.current_process is not None:
+                try:
+                    self.current_process.terminate()
+                    self.current_process.wait(timeout=0.05)
+                except Exception:
+                    pass
+            
+            # 음성 속도를 185로 올려 더 민첩하게 뱉고, 볼륨을 최대(-a 200)로 상향
+            # 쉼표(,)를 붙여서 단어 간의 간격만 또박또박하게 유지
+            self.current_process = subprocess.Popen(
+                ["espeak", f'"{text}"', "-s", "185", "-a", "200"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+
+audio_manager = UltraFastAudioEngine()
 
 
-# --- 메인 실행 엔진 ---
+# --- 메인 제어 커널 ---
 def run_system():
     infra_ai = BackgroundInferenceThread('my_fixed_yolov8s.onnx').start()
     vs = RealtimeCameraStream(src=0).start()
@@ -121,11 +130,13 @@ def run_system():
 
     last_spoken_state = ""
     last_spoken_time = 0
-    AUDIO_MIN_INTERVAL = 0.6  
+    
+    # ⚡ 가로채기 성능을 극한으로 끌어올리기 위해 오디오 발화 최소 방어선 주기를 제거(0.2초)
+    AUDIO_MIN_INTERVAL = 0.2  
 
     print("\n" + "="*50)
-    print("🚀 [640 풀 해상도 일치 + 다중 인식 전체 출력 모드] 가동")
-    print("해상도 오동작 에러를 완벽 청소했습니다. (Ctrl + C 종료)")
+    print("🚀 [초고속 가로채기 엔진 + 1단어 거리 브리핑] 구동")
+    print("사물이 바뀌면 말하던 도중 즉시 끊고 다음 사물로 넘어갑니다.")
     print("="*50 + "\n")
 
     try:
@@ -151,32 +162,34 @@ def run_system():
 
                     box_area = (x2 - x1) * (y2 - y1)
                     area_ratio = box_area / (w_frame * h_frame)
-                    distance_status = "close" if area_ratio > 0.12 else "medium" if area_ratio > 0.03 else "far"
+                    
+                    # 💡 요구사항 반영: 극단적으로 짧고 즉각적인 단어로 수정
+                    if area_ratio > 0.12:
+                        distance_status = "Close"
+                    elif area_ratio > 0.03:
+                        distance_status = "Front"
+                    else:
+                        distance_status = "Far"
 
                     detected_objects.append({
                         'name': class_name, 'distance': distance_status, 'y2_coord': y2, 'conf': obj['conf']
                     })
 
-                # 다중 사물 전체 출력 및 음성 조합
                 if detected_objects:
+                    # 화면 하단에 가장 가까운 최우선 사물 1개만 스크리닝
                     detected_objects.sort(key=lambda o: o['y2_coord'], reverse=True)
                     
-                    print(f"\n📸 [포착된 사물 명단 (총 {len(detected_objects)}개)]")
-                    for idx, obj in enumerate(detected_objects):
-                        print(f"  └ [{idx+1}] {obj['name']} ({obj['distance']}) | 확신도: {obj['conf']:.2f}")
-
                     closest_target = detected_objects[0]
-                    speech_text = f"{closest_target['name']}, {closest_target['distance']}"
-                    
-                    if len(detected_objects) > 1:
-                        second_target = detected_objects[1]
-                        if second_target['name'] != closest_target['name']:
-                            speech_text += f" and {second_target['name']} {second_target['distance']}"
+                    # "Close, person." 또는 "Front, chair." 형태로 문장 조합 최소화
+                    speech_text = f"{closest_target['distance']}, {closest_target['name']}."
 
                     current_time = time.time()
-                    if (speech_text != last_spoken_state) or (current_time - last_spoken_time > 1.2):
+                    
+                    # 사물 이름이나 거리가 단 1도라도 바뀌면 즉시 가로채기 지시!
+                    if (speech_text != last_spoken_state) or (current_time - last_spoken_time > 1.8):
                         if (current_time - last_spoken_time > AUDIO_MIN_INTERVAL):
-                            speak_interrupt_async(speech_text)
+                            print(f"⚡ [즉시 가로채기 발화]: {speech_text}")
+                            audio_manager.speak_now(speech_text)
                             last_spoken_state = speech_text
                             last_spoken_time = current_time
                 else:
