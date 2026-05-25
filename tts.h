@@ -1,5 +1,5 @@
-#ifndef VOICE_MANAGER_H
-#define VOICE_MANAGER_H
+#ifndef TTS_H
+#define TTS_H
 
 #include <pthread.h>
 #include <sys/types.h>

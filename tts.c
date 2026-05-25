@@ -5,7 +5,7 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <time.h>
-#include "tts.h" // 헤더 파일 연결
+#include "tts.h"
 
 // 전역 변수 실체화
 VoiceManager vm;
