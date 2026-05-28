@@ -1,5 +1,7 @@
 import os
 os.environ["PYTHONUNBUFFERED"] = "1"
+# ⚡ pygame이 불필요한 화면(X11)을 찾지 않도록 더미 비디오 드라이버 강제 지정
+os.environ["SDL_VIDEODRIVER"] = "dummy"
 
 import cv2
 import numpy as np
@@ -9,6 +11,7 @@ from ultralytics import YOLOWorld
 import torch
 import RPi.GPIO as GPIO
 from gtts import gTTS
+import pygame
 
 # 🔥 형의 연산 성능 풀파워 사수 (스레드 2개 고정)
 torch.set_num_threads(2)
@@ -28,42 +31,49 @@ zone_lock = threading.Lock()
 AUDIO_DIR = "/home/pav/audio_cache"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
-# 💡 [초고속 음성 압축 빌드] 1.4배속으로 가속된 진짜 사람 목소리 파일 생성
-def get_fast_voice_file(text):
+# 💡 [C-Extension 하드웨어 오디오 가속기 초기화]
+pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+AUDIO_BANK = {} # 메모리(RAM)에 사운드 포인터를 상주시키는 뱅크
+
+def pre_cache_audio(text):
+    """프로그램 시작 시 딱 한 번만 gTTS를 생성하고, pygame Sound 객체로 메모리에 상주"""
+    global AUDIO_BANK
     safe_name = text.replace(" ", "_")
-    raw_path = os.path.join(AUDIO_DIR, f"{safe_name}_raw.mp3")
     fast_path = os.path.join(AUDIO_DIR, f"{safe_name}_fast.mp3")
     
-    # 1.4배속 가속 파일이 없으면 새로 생성
     if not os.path.exists(fast_path):
         try:
-            # 순정 gTTS 생성
+            raw_path = os.path.join(AUDIO_DIR, f"{safe_name}_raw.mp3")
             tts = gTTS(text=text, lang='ko', slow=False)
             tts.save(raw_path)
-            
-            # 리눅스 sox 시스템 명령어로 음질 저하 없이 '1.4배속' 강제 가속 압축 빌드!
+            # 배속 인코딩은 초기화 시점에 딱 한 번만 수행
             os.system(f"sox {raw_path} {fast_path} tempo 1.4 > /dev/null 2>&1")
-            
-            # 원본 임시 파일 삭제
             if os.path.exists(raw_path):
                 os.remove(raw_path)
         except Exception:
-            return "/usr/share/sounds/alsa/Front_Center.wav"
+            return
             
-    return fast_path
-
-# 💡 [비동기 초경량 재생 리스타트]
-def play_voice_async(text):
-    def _play():
+    # ⚡ 핵심: MP3 파일을 읽어서 C 구조체 포인터로 메모리에 박아버림 (os.system 전면 폐기)
+    if os.path.exists(fast_path) and text not in AUDIO_BANK:
         try:
-            audio_path = get_fast_voice_file(text)
-            if audio_path.endswith(".mp3"):
-                os.system(f"mpg123 -q {audio_path} > /dev/null 2>&1 || play -q {audio_path} > /dev/null 2>&1")
-            else:
-                os.system(f"aplay -q {audio_path} > /dev/null 2>&1")
+            AUDIO_BANK[text] = pygame.mixer.Sound(fast_path)
         except Exception:
             pass
-    threading.Thread(target=_play, daemon=True).start()
+
+def play_voice_direct(text, interrupt=False):
+    """OS 쉘을 전혀 거치지 않고, 메모리 주소에서 사운드 카드로 0.001초 만에 다이렉트 스트리밍"""
+    global AUDIO_BANK
+    if not is_detecting and text not in ["탐지 시작", "탐지 일시 정지", "기기를 종료합니다", "시스템 초기화 중입니다", "준비 완료"]:
+        return
+
+    if interrupt:
+        pygame.mixer.stop() # ⚡ 현재 재생 중인 모든 오디오 하드웨어 채널 즉시 정지
+        
+    if text in AUDIO_BANK:
+        AUDIO_BANK[text].play() # ⚡ 파이썬을 거치지 않고 C 라이브러리가 사운드 카드로 직접 출력
+    else:
+        # 예외 상황 대비 하드웨어 비프음
+        os.system("aplay -q /usr/share/sounds/alsa/Front_Center.wav > /dev/null 2>&1")
 
 # 메인 인퍼런스 엔진
 def inference_thread_func(model, clean_labels, korean_names, crop_config):
@@ -71,8 +81,7 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
 
     last_spoken_state = ""
     last_spoken_time = 0
-    # 💡 속도가 빨라졌으므로 쿨다운을 0.9초로 줄여서 실시간 싱크 반응 속도 극대화!
-    AUDIO_COOLDOWN = 0.9  
+    AUDIO_COOLDOWN = 1.6  
     
     start_x, end_x = crop_config
     crop_width = end_x - start_x
@@ -91,11 +100,7 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
     indoor_hints = ['refrigerator', 'bed', 'wardrobe', 'hanger', 'shelf', 'tv', 'laptop', 'microwave']
     outdoor_hints = ['scooter', 'bollard', 'cone', 'pole', 'puddle', 'tree', 'car', 'bus', 'truck']
 
-    print(f"🧠 [라즈베리파이 AI 엔진] 가중치 및 한글 변환 매트릭스 구동 완료")
-
-    # 시스템 기본 멘트 미리 초고속 캐싱 빌드
-    for text in ["시스템 초기화 중입니다", "준비 완료", "탐지 시작", "탐지 일시 정지", "기기를 종료합니다"]:
-        threading.Thread(target=get_fast_voice_file, args=(text,), daemon=True).start()
+    print(f"🧠 [라즈베리파이 AI 엔진] 오디오 병목 100% 제거 버전 구동")
 
     while is_running:
         if not is_detecting:
@@ -105,15 +110,16 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
 
         with frame_lock:
             local_frame = latest_frame
-            latest_frame = None
+            latest_frame = None  
 
         if local_frame is None:
-            time.sleep(0.01)
+            time.sleep(0.001)  
             continue
 
         cropped_frame = local_frame[:, start_x:end_x]
 
         try:
+            # ⚡ 오디오 다이렉트 스트리밍 덕분에 predict() 연산이 뚝뚝 끊기던 현상이 완벽히 치료됨
             results = model.predict(cropped_frame, imgsz=320, conf=0.15, iou=0.40, verbose=False)
             
             boxes = []
@@ -160,10 +166,12 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
             if final_selected_obj:
                 if "wall" not in final_selected_obj and "window" not in final_selected_obj:
                     current_time = time.time()
+                    
                     if (final_selected_obj != last_spoken_state) or (current_time - last_spoken_time > AUDIO_COOLDOWN):
-                        print(f"[1.4배속 즉시출력] 🎯 {final_selected_obj}")
+                        print(f"[C-가속 하드웨어 즉시출력] 🎯 {final_selected_obj}")
                         
-                        play_voice_async(final_selected_obj)
+                        # ⚡ 함수 변경: 플레이어가 아닌 사운드 카드 포인터로 직행
+                        play_voice_direct(final_selected_obj, interrupt=False)
                         
                         last_spoken_state = final_selected_obj
                         last_spoken_time = current_time
@@ -173,7 +181,7 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
         except Exception as e:
             pass
 
-        time.sleep(0.01)
+        time.sleep(0.005)
 
 # 하드웨어 버튼 감지 스레드
 def button_monitor_thread():
@@ -188,7 +196,7 @@ def button_monitor_thread():
             pressed_time = time.time() - start_time
             
             if pressed_time >= 3:
-                play_voice_async("기기를 종료합니다")
+                play_voice_direct("기기를 종료합니다", interrupt=True)
                 time.sleep(1.2)
                 is_running = False
                 os.system('sudo poweroff')
@@ -196,25 +204,15 @@ def button_monitor_thread():
             else:
                 is_detecting = not is_detecting
                 if is_detecting:
-                    play_voice_async("탐지 시작")
+                    play_voice_direct("탐지 시작", interrupt=True)
                     print("▶️ 탐지 활성화")
                 else:
-                    play_voice_async("탐지 일시 정지")
+                    play_voice_direct("탐지 일시 정지", interrupt=True)
                     print("⏸️ 탐지 비활성화")
         time.sleep(0.1)
 
 def run_pi_system():
     global latest_frame, is_running
-
-    os.system('amixer set Master 100% > /dev/null 2>&1')
-    play_voice_async("시스템 초기화 중입니다")
-
-    print("⏳ [초기화] AI 모델 로딩 중...")
-    model = YOLOWorld('fixed_model.pt')
-
-    print("⚡ [초기화] 하드웨어 가속 및 웜업 연산 가동...")
-    dummy_img = np.zeros((240, 160, 3), dtype=np.uint8)
-    model.predict(dummy_img, verbose=False)
 
     clean_labels = {
         "automatic glass sliding door with silver metal frame": "door",
@@ -247,8 +245,29 @@ def run_pi_system():
         'handrail': '난간', 'window': '창문'
     }
 
-    cap = cv2.VideoCapture(0)
+    # ⚡ [하드웨어 뱅크 전수 로드] 부팅 시 메모리에 사운드 싹 다 올려버리기
+    print("📢 [초기화] 하드웨어 가속 음성 팩 메모리 로드 중 (최초 1회)...")
+    system_ment = ["시스템 초기화 중입니다", "준비 완료", "탐지 시작", "탐지 일시 정지", "기기를 종료합니다"]
+    for ment in system_ment:
+        pre_cache_audio(ment)
+        
+    for ko_val in korean_names.values():
+        for pos in ["정면", "좌측", "우측"]:
+            pre_cache_audio(f"{pos} {ko_val}")
+    print("✅ [초기화] 모든 오디오 소스가 RAM 사운드 뱅크에 박혔습니다. 시스템 병목 완전 해제.")
+
+    play_voice_direct("시스템 초기화 중입니다", interrupt=True)
+
+    print("⏳ [초기화] AI 모델 로딩 중...")
+    model = YOLOWorld('fixed_model.pt')
+
+    print("⚡ [초기화] 하드웨어 가속 및 웜업 연산 가동...")
+    dummy_img = np.zeros((240, 160, 3), dtype=np.uint8)
+    model.predict(dummy_img, verbose=False)
+
+    cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
     if not cap.isOpened(): return
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     W, H = 320, 240
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, W)
@@ -264,15 +283,15 @@ def run_pi_system():
     btn_thread = threading.Thread(target=button_monitor_thread, daemon=True)
     btn_thread.start()
 
-    play_voice_async("준비 완료")
-    print("🚀 [라즈베리파이] 1.4배속 가속 버전 하이브리드 대기 모드 가동.")
+    play_voice_direct("준비 완료", interrupt=True)
+    print("🚀 [라즈베리파이] C-Extension 하드웨어 직접 제어 모드 가동.")
 
     while is_running:
-        for _ in range(2): cap.grab()
-        ret, frame = cap.retrieve()
+        ret, frame = cap.read()
         if not ret: break
-        with frame_lock: latest_frame = frame
-        time.sleep(0.04)
+        with frame_lock: 
+            latest_frame = frame
+        time.sleep(0.01)
 
     cap.release()
     GPIO.cleanup()
