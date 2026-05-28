@@ -1,5 +1,5 @@
 import os
-os.environ["PYTHONUNBUFFERED"] = "1"  # 실시간 로그 방출 활성화
+os.environ["PYTHONUNBUFFERED"] = "1"
 
 import cv2
 import numpy as np
@@ -8,39 +8,71 @@ import time
 from ultralytics import YOLOWorld
 import torch
 import RPi.GPIO as GPIO
+from gtts import gTTS
 
-# 라즈베리파이 CPU 초기 구동 최적화 및 스레드 고정
+# 🔥 형의 연산 성능 풀파워 사수 (스레드 2개 고정)
 torch.set_num_threads(2)
 
-# GPIO 및 버튼 하드웨어 설정
 BUTTON_PIN = 3
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# 전역 공유 자원 및 플래그
 latest_frame = None
 frame_lock = threading.Lock()
 is_running = True
-is_detecting = False  # 💡 버튼으로 켜고 끌 탐지 제어 스위치 플래그
+is_detecting = False  
 
 current_zone = "UNKNOWN"  
 zone_lock = threading.Lock()
 
-def speak_pure_audio(text):
-    def _say():
-        try:
-            os.system(f"espeak -v ko+f3 -s 160 -a 200 \"{text}\" > /dev/null 2>&1")
-        except Exception as e:
-            pass
-    threading.Thread(target=_say, daemon=True).start()
+AUDIO_DIR = "/home/pav/audio_cache"
+os.makedirs(AUDIO_DIR, exist_ok=True)
 
-# 💡 형의 메인 인퍼런스 엔진 원본 로직 100% 복구
+# 💡 [초고속 음성 압축 빌드] 1.4배속으로 가속된 진짜 사람 목소리 파일 생성
+def get_fast_voice_file(text):
+    safe_name = text.replace(" ", "_")
+    raw_path = os.path.join(AUDIO_DIR, f"{safe_name}_raw.mp3")
+    fast_path = os.path.join(AUDIO_DIR, f"{safe_name}_fast.mp3")
+    
+    # 1.4배속 가속 파일이 없으면 새로 생성
+    if not os.path.exists(fast_path):
+        try:
+            # 순정 gTTS 생성
+            tts = gTTS(text=text, lang='ko', slow=False)
+            tts.save(raw_path)
+            
+            # 리눅스 sox 시스템 명령어로 음질 저하 없이 '1.4배속' 강제 가속 압축 빌드!
+            os.system(f"sox {raw_path} {fast_path} tempo 1.4 > /dev/null 2>&1")
+            
+            # 원본 임시 파일 삭제
+            if os.path.exists(raw_path):
+                os.remove(raw_path)
+        except Exception:
+            return "/usr/share/sounds/alsa/Front_Center.wav"
+            
+    return fast_path
+
+# 💡 [비동기 초경량 재생 리스타트]
+def play_voice_async(text):
+    def _play():
+        try:
+            audio_path = get_fast_voice_file(text)
+            if audio_path.endswith(".mp3"):
+                os.system(f"mpg123 -q {audio_path} > /dev/null 2>&1 || play -q {audio_path} > /dev/null 2>&1")
+            else:
+                os.system(f"aplay -q {audio_path} > /dev/null 2>&1")
+        except Exception:
+            pass
+    threading.Thread(target=_play, daemon=True).start()
+
+# 메인 인퍼런스 엔진
 def inference_thread_func(model, clean_labels, korean_names, crop_config):
     global latest_frame, is_running, current_zone, is_detecting
 
     last_spoken_state = ""
     last_spoken_time = 0
-    AUDIO_COOLDOWN = 1.3  
+    # 💡 속도가 빨라졌으므로 쿨다운을 0.9초로 줄여서 실시간 싱크 반응 속도 극대화!
+    AUDIO_COOLDOWN = 0.9  
     
     start_x, end_x = crop_config
     crop_width = end_x - start_x
@@ -61,8 +93,11 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
 
     print(f"🧠 [라즈베리파이 AI 엔진] 가중치 및 한글 변환 매트릭스 구동 완료")
 
+    # 시스템 기본 멘트 미리 초고속 캐싱 빌드
+    for text in ["시스템 초기화 중입니다", "준비 완료", "탐지 시작", "탐지 일시 정지", "기기를 종료합니다"]:
+        threading.Thread(target=get_fast_voice_file, args=(text,), daemon=True).start()
+
     while is_running:
-        # 💡 탐지 스위치가 꺼져있으면(False) 연산을 수행하지 않고 대기하여 배터리 절약
         if not is_detecting:
             last_spoken_state = ""
             time.sleep(0.1)
@@ -97,7 +132,6 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
                 raw_name = model.names[cls_id]
                 class_name = clean_labels.get(raw_name, raw_name)
 
-                # 공간 인지 필터 로직
                 with zone_lock:
                     if class_name in indoor_hints and conf > 0.45:
                         if current_zone != "INDOOR": current_zone = "INDOOR"
@@ -106,7 +140,6 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
                     if current_zone == "INDOOR" and class_name in outdoor_hints: conf -= 0.40  
                     elif current_zone == "OUTDOOR" and class_name in indoor_hints: conf -= 0.40  
 
-                # 가중치 튜닝
                 if class_name in ['door', 'handle', 'handrail']: 
                     conf = min(conf + 0.35, 1.0)  
                 elif class_name in ['wardrobe', 'shelf']:
@@ -128,8 +161,10 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
                 if "wall" not in final_selected_obj and "window" not in final_selected_obj:
                     current_time = time.time()
                     if (final_selected_obj != last_spoken_state) or (current_time - last_spoken_time > AUDIO_COOLDOWN):
-                        print(f"[순정 즉시출력] 🎯 {final_selected_obj}")
-                        speak_pure_audio(final_selected_obj)
+                        print(f"[1.4배속 즉시출력] 🎯 {final_selected_obj}")
+                        
+                        play_voice_async(final_selected_obj)
+                        
                         last_spoken_state = final_selected_obj
                         last_spoken_time = current_time
             else:
@@ -140,87 +175,65 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
 
         time.sleep(0.01)
 
-# 💡 하드웨어 버튼 감지 스레드 (백그라운드 상시 가동)
+# 하드웨어 버튼 감지 스레드
 def button_monitor_thread():
     global is_detecting, is_running
     while is_running:
         if GPIO.input(BUTTON_PIN) == GPIO.LOW:
             start_time = time.time()
-            
             while GPIO.input(BUTTON_PIN) == GPIO.LOW:
                 time.sleep(0.05)
                 if time.time() - start_time > 3:
                     break
-            
             pressed_time = time.time() - start_time
             
-            # [종료] 3초 이상 꾹 누르면 시스템 파워오프
             if pressed_time >= 3:
-                os.system('espeak -v ko+f3 -s 160 -a 200 "기기를 종료합니다."')
+                play_voice_async("기기를 종료합니다")
+                time.sleep(1.2)
                 is_running = False
                 os.system('sudo poweroff')
                 break
-            # [토글] 짧게 누르면 탐지 Start / Stop 스위치 전환
             else:
                 is_detecting = not is_detecting
                 if is_detecting:
-                    os.system('espeak -v ko+f3 -s 160 -a 200 "탐지 시작." &')
-                    print("▶️ 탐지 활성화 (0초 가동 시작)")
+                    play_voice_async("탐지 시작")
+                    print("▶️ 탐지 활성화")
                 else:
-                    os.system('espeak -v ko+f3 -s 160 -a 200 "탐지 일시 정지." &')
-                    print("⏸️ 탐지 비활성화 (대기 상태)")
+                    play_voice_async("탐지 일시 정지")
+                    print("⏸️ 탐지 비활성화")
         time.sleep(0.1)
 
 def run_pi_system():
     global latest_frame, is_running
 
-    # 볼륨 강제 확보 및 초기화 사운드 송출
     os.system('amixer set Master 100% > /dev/null 2>&1')
-    os.system('espeak -v ko+f3 -s 160 -a 200 "시스템 초기화 중입니다." &')
+    play_voice_async("시스템 초기화 중입니다")
 
     print("⏳ [초기화] AI 모델 로딩 중...")
     model = YOLOWorld('fixed_model.pt')
 
     print("⚡ [초기화] 하드웨어 가속 및 웜업 연산 가동...")
     dummy_img = np.zeros((240, 160, 3), dtype=np.uint8)
-    model.predict(dummy_img, imgsz=320, verbose=False)
+    model.predict(dummy_img, verbose=False)
 
-    # 형이 세팅한 클린 라벨과 한글 매핑 100% 원본 복구
     clean_labels = {
         "automatic glass sliding door with silver metal frame": "door",
         "framed glass door panel for entrance": "door", 
         "room door with a handle": "door", 
         "door handle or door knob": "handle", 
-        
         "pedestrian stairs with multiple continuous vertical steps, not a single road curb or flat ramp": "stairs", 
         "pedestrian stairs leading upwards with sequential levels": "stairs", 
-        
         "electric kick scooter with a vertical handlebar and a flat board to stand on": "scooter", 
-        "person": "person", 
-        "riding bicycle": "bicycle", 
-        "motorcycle with heavy engine": "motorcycle", 
-        
-        "bench": "bench", 
-        "furniture chair with backrest": "chair", 
-        "potted plant": "plant", "tv": "tv", "laptop": "laptop", "cell phone": "phone", "microwave": "microwave", "bollard": "bollard", 
+        "person": "person", "riding bicycle": "bicycle", "motorcycle with heavy engine": "motorcycle", 
+        "bench": "bench", "furniture chair with backrest": "chair", "potted plant": "plant", "tv": "tv", 
+        "laptop": "laptop", "cell phone": "phone", "microwave": "microwave", "bollard": "bollard", 
         "traffic cone": "cone", "utility pole": "pole", "water puddle": "puddle", 
-        
         "vertical storage shelf with multiple grid racks for holding items, not a flat table": "shelf", 
-        "stair": "stair", "tree": "tree", 
-        "passenger car on the road": "car", 
-        "large passenger bus": "bus", 
-        "cargo truck": "truck", 
-        
-        "kitchen refrigerator appliance": "refrigerator", 
-        "bed": "bed", 
+        "stair": "stair", "tree": "tree", "passenger car on the road": "car", "large passenger bus": "bus", 
+        "cargo truck": "truck", "kitchen refrigerator appliance": "refrigerator", "bed": "bed", 
         "flat dining table or desk supported by legs with a single flat surface for working, NO multiple shelves": "table", 
-        "cardboard box": "box", 
-        "wall": "wall", 
-        "window fixed in a wall": "window", 
-        "wooden wardrobe": "wardrobe", 
-        "clothes hanger rack": "hanger", 
-        
-        "safety handrail or metallic grab bar mounted along stairs": "handrail"
+        "cardboard box": "box", "wall": "wall", "window fixed in a wall": "window", "wooden wardrobe": "wardrobe", 
+        "clothes hanger rack": "hanger", "safety handrail or metallic grab bar mounted along stairs": "handrail"
     }
 
     korean_names = {
@@ -235,9 +248,7 @@ def run_pi_system():
     }
 
     cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("❌ 카메라를 열 수 없습니다.")
-        return
+    if not cap.isOpened(): return
 
     W, H = 320, 240
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, W)
@@ -247,31 +258,20 @@ def run_pi_system():
     start_x = (W - crop_w) // 2
     end_x = start_x + crop_w
 
-    # 1. AI 인퍼런스 스레드 기동
-    ai_thread = threading.Thread(
-        target=inference_thread_func, 
-        args=(model, clean_labels, korean_names, (start_x, end_x)), 
-        daemon=True
-    )
+    ai_thread = threading.Thread(target=inference_thread_func, args=(model, clean_labels, korean_names, (start_x, end_x)), daemon=True)
     ai_thread.start()
 
-    # 2. 버튼 감지 스레드 기동
     btn_thread = threading.Thread(target=button_monitor_thread, daemon=True)
     btn_thread.start()
 
-    # 시스템 대기 준비 완료 알림
-    os.system('espeak -v ko+f3 -s 160 -a 200 "준비 완료." &')
-    print("🚀 [라즈베리파이] 상시 대기 가동 성공. 버튼 입력을 기다립니다.")
+    play_voice_async("준비 완료")
+    print("🚀 [라즈베리파이] 1.4배속 가속 버전 하이브리드 대기 모드 가동.")
 
-    # 3. 메인 카메라 스트리밍 캡처 루프
     while is_running:
-        for _ in range(2): 
-            cap.grab()
+        for _ in range(2): cap.grab()
         ret, frame = cap.retrieve()
-        if not ret: 
-            break
-        with frame_lock: 
-            latest_frame = frame
+        if not ret: break
+        with frame_lock: latest_frame = frame
         time.sleep(0.04)
 
     cap.release()
