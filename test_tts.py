@@ -1,5 +1,5 @@
 import time
-from tts import VoiceManager, check_under_voltage
+from tts import VoiceManager
 
 def run_test():
     # 1. 인스턴스 생성

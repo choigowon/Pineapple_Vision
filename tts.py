@@ -25,7 +25,7 @@ class VoiceManager:
             try:
                 # 음성 출력 프로세스 시작 (Popen을 사용하여 비동기 실행)
                 self.current_process = subprocess.Popen([
-                    'espeak', '-v', 'ko', '-s', '220', '-p', '50', text
+                    'espeak', '-v', 'ko+f3', '-s', '160', '-p', '60', '-a', '200', text
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
                 # 프로세스가 종료될 때까지 대기
