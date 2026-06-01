@@ -1,7 +1,12 @@
 import os
+import sys
+import warnings
+
+# ⚡ 자잘한 라이브러리 경고 및 pygame 로고 출력 원천 차단
+warnings.filterwarnings("ignore")
 os.environ["PYTHONUNBUFFERED"] = "1"
-# ⚡ pygame이 불필요한 화면(X11)을 찾지 않도록 더미 비디오 드라이버 강제 지정
 os.environ["SDL_VIDEODRIVER"] = "dummy"
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "hide"
 
 import cv2
 import numpy as np
@@ -15,6 +20,7 @@ import pygame
 
 # 🔥 형의 연산 성능 풀파워 사수 (스레드 2개 고정)
 torch.set_num_threads(2)
+GPIO.setwarnings(False)
 
 BUTTON_PIN = 3
 GPIO.setmode(GPIO.BCM)
@@ -100,8 +106,6 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
     indoor_hints = ['refrigerator', 'bed', 'wardrobe', 'hanger', 'shelf', 'tv', 'laptop', 'microwave']
     outdoor_hints = ['scooter', 'bollard', 'cone', 'pole', 'puddle', 'tree', 'car', 'bus', 'truck']
 
-    print(f"🧠 [라즈베리파이 AI 엔진] 오디오 병목 100% 제거 버전 구동")
-
     while is_running:
         if not is_detecting:
             last_spoken_state = ""
@@ -119,13 +123,19 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
         cropped_frame = local_frame[:, start_x:end_x]
 
         try:
-            # ⚡ 오디오 다이렉트 스트리밍 덕분에 predict() 연산이 뚝뚝 끊기던 현상이 완벽히 치료됨
             results = model.predict(cropped_frame, imgsz=320, conf=0.15, iou=0.40, verbose=False)
             
             boxes = []
             for result in results:
                 if result.boxes:
                     boxes.extend(result.boxes)
+            
+            # ⚡ [난간 오탐지 방지] 현재 프레임에 탐지된 모든 클래스명 임시 수집
+            present_classes = []
+            for b in boxes:
+                r_id = int(b.cls[0])
+                r_name = model.names[r_id]
+                present_classes.append(clean_labels.get(r_name, r_name))
             
             boxes.sort(key=lambda b: float(b.conf[0]), reverse=True)
             final_selected_obj = None
@@ -146,8 +156,14 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
                     if current_zone == "INDOOR" and class_name in outdoor_hints: conf -= 0.40  
                     elif current_zone == "OUTDOOR" and class_name in indoor_hints: conf -= 0.40  
 
-                if class_name in ['door', 'handle', 'handrail']: 
+                if class_name in ['door', 'handle']: 
                     conf = min(conf + 0.35, 1.0)  
+                elif class_name == 'handrail':
+                    # ⚡ 난간은 주변에 계단(stairs, stair)이 함께 포착될 때만 가중치 부여, 독립적일 땐 패널티
+                    if ('stairs' in present_classes) or ('stair' in present_classes):
+                        conf = min(conf + 0.35, 1.0)
+                    else:
+                        conf -= 0.30  # 단독으로 테이블 등을 난간으로 오탐지하는 것 억제
                 elif class_name in ['wardrobe', 'shelf']:
                     conf = conf - 0.20
 
@@ -168,9 +184,7 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
                     current_time = time.time()
                     
                     if (final_selected_obj != last_spoken_state) or (current_time - last_spoken_time > AUDIO_COOLDOWN):
-                        print(f"[C-가속 하드웨어 즉시출력] 🎯 {final_selected_obj}")
-                        
-                        # ⚡ 함수 변경: 플레이어가 아닌 사운드 카드 포인터로 직행
+                        # ⚡ 텍스트 출력 제거 지침 반영 (print문 완전 삭제)
                         play_voice_direct(final_selected_obj, interrupt=False)
                         
                         last_spoken_state = final_selected_obj
@@ -205,10 +219,8 @@ def button_monitor_thread():
                 is_detecting = not is_detecting
                 if is_detecting:
                     play_voice_direct("탐지 시작", interrupt=True)
-                    print("▶️ 탐지 활성화")
                 else:
                     play_voice_direct("탐지 일시 정지", interrupt=True)
-                    print("⏸️ 탐지 비활성화")
         time.sleep(0.1)
 
 def run_pi_system():
@@ -246,7 +258,6 @@ def run_pi_system():
     }
 
     # ⚡ [하드웨어 뱅크 전수 로드] 부팅 시 메모리에 사운드 싹 다 올려버리기
-    print("📢 [초기화] 하드웨어 가속 음성 팩 메모리 로드 중 (최초 1회)...")
     system_ment = ["시스템 초기화 중입니다", "준비 완료", "탐지 시작", "탐지 일시 정지", "기기를 종료합니다"]
     for ment in system_ment:
         pre_cache_audio(ment)
@@ -254,14 +265,11 @@ def run_pi_system():
     for ko_val in korean_names.values():
         for pos in ["정면", "좌측", "우측"]:
             pre_cache_audio(f"{pos} {ko_val}")
-    print("✅ [초기화] 모든 오디오 소스가 RAM 사운드 뱅크에 박혔습니다. 시스템 병목 완전 해제.")
 
     play_voice_direct("시스템 초기화 중입니다", interrupt=True)
 
-    print("⏳ [초기화] AI 모델 로딩 중...")
     model = YOLOWorld('fixed_model.pt')
 
-    print("⚡ [초기화] 하드웨어 가속 및 웜업 연산 가동...")
     dummy_img = np.zeros((240, 160, 3), dtype=np.uint8)
     model.predict(dummy_img, verbose=False)
 
@@ -284,7 +292,6 @@ def run_pi_system():
     btn_thread.start()
 
     play_voice_direct("준비 완료", interrupt=True)
-    print("🚀 [라즈베리파이] C-Extension 하드웨어 직접 제어 모드 가동.")
 
     while is_running:
         ret, frame = cap.read()
