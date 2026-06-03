@@ -2,40 +2,35 @@ from ultralytics import YOLOWorld
 
 model = YOLOWorld('yolov8s-worldv2.pt')
 
+# 💡 오리지널의 직관적인 명칭 구조를 참고하되, 가구와 문의 경계를 확실히 가른 최적화 프롬프트
 custom_classes = [
-    "automatic glass sliding door with silver metal frame",
-    "framed glass door panel for entrance",
-    "room door with a handle",
-    "door handle or door knob",
-
-    "pedestrian stairs with multiple continuous vertical steps, not a single road curb or flat ramp",
-    "pedestrian stairs leading upwards with sequential levels",
-
-    "electric kick scooter with a vertical handlebar and a flat board to stand on",
-    "person",
-    "riding bicycle",
-    "motorcycle with heavy engine",
-
-    "bench",
-    "furniture chair with backrest",
-    "potted plant", "tv", "laptop", "cell phone", "microwave", "bollard",
-    "traffic cone", "utility pole", "water puddle",
-
-    # ⚠️ [테이블 vs 선반] 칸칸이 나누어진 수직 수납장/랙 구조임을 명시하여 평평한 테이블과 분리
-    "vertical storage shelf with multiple grid racks for holding items, not a flat table",
-    "stair", "tree",
-    "passenger car on the road",
-    "large passenger bus", "cargo truck",
-    "kitchen refrigerator appliance",
-    "bed",
-
-    # ⚠️ [테이블 정의 강화] 다리 몇 개 위에 평평한 상판 딱 하나만 있는 식사 및 작업용 가구 강조
-    "flat dining table or desk supported by legs with a single flat surface for working, NO multiple shelves",
-    "cardboard box", "wall", "window fixed in a wall",
-    "wooden wardrobe", "clothes hanger rack",
-
-    "safety handrail or metallic grab bar mounted along stairs"
+    # --- 문 영역 ---
+    "a room door with a handle", 
+    "an entrance door", 
+    "a glass door with frame",  # 유리문이 옷장으로 튀는 것을 막기 위한 프레임 강조
+    
+    # --- 도로 및 계단 영역 ---
+    "concrete curb on the street", "stairs leading downwards", "stairs leading upwards", 
+    "wheelchair ramp or slope", "stair",
+    
+    # --- 이동수단 및 사람 ---
+    "electric kick scooter", "person", "bicycle", "motorcycle", 
+    
+    # --- 가구 및 소품 ---
+    "sink", "stop sign", "bench", "chair", "potted plant", 
+    "tv", "laptop", "cell phone", "microwave", "bed", "a dining table", "a cardboard box",
+    "wall", "window", "clothes hanger rack",
+    
+    # --- 실외 장애물 ---
+    "bollard", "traffic cone", "utility pole", "water puddle", "tree",
+    "a passenger car", "a large passenger bus", "a cargo truck",
+    "a kitchen refrigerator", 
+    
+    # --- 💥 옷장 / 선반 영역 오탐 방지 종결 프롬프트 ---
+    "a storage shelf with open racks", # 앞면이 뚫린 격자 구조 강조 (옷장과 분리)
+    "a wooden wardrobe cabinet for clothes storage" # 의류 보관용 거대 가구 속성 강조 (문과 분리)
 ]
+
 model.set_classes(custom_classes)
 model.save('fixed_model.pt')
-print("🎉 테이블과 선반의 형태적 독립 패치가 완료된 'fixed_model.pt' 빌드 완료!")
+print("🎉 [프롬프트 밸런스 튜닝 완료] 'fixed_model.pt' 빌드가 완료되었습니다.")
