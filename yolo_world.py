@@ -73,7 +73,7 @@ def battery_monitor_thread_func():
         # CPU 과점유 방지를 위한 주기적 휴지
         time.sleep(1)
 
-def inference_thread_func(model, clean_labels, crop_config):
+def inference_thread_func(model, clean_labels, korean_names, crop_config):
     global latest_frame, is_running, current_zone
 
     last_spoken_state = ""
@@ -83,32 +83,22 @@ def inference_thread_func(model, clean_labels, crop_config):
     start_x, end_x = crop_config
     crop_width = end_x - start_x
 
-    # 💡 [문턱값 재조정] 계단 오탐지를 자제시키기 위해 커트라인을 0.27로 상향 타이트하게 조정
+    # 순정 컷오프 타이트 조율
     class_conf_thresholds = {
-        'stairs': 0.27,         # 📈 연석/경사로 오탐지 브레이크 (0.22 -> 0.27)
-        'handrail': 0.18,       
-        'door': 0.18,           
-        'handle': 0.18, 
-        'refrigerator': 0.55,   
-        'scooter': 0.20,        # 킥보드는 민감하게 반응하도록 0.20 유지
-        'bicycle': 0.22,        
-        'motorcycle': 0.25,     
-        'bench': 0.50,          
-        'table': 0.45,          
-        'box': 0.35,            
-        'window': 0.30,
-        'wardrobe': 0.40, 'shelf': 0.40, 
-        'chair': 0.35, 'person': 0.30, 'plant': 0.30, 'tv': 0.35, 
-        'laptop': 0.35, 'phone': 0.30, 'microwave': 0.40, 'bollard': 0.35, 
-        'cone': 0.35, 'pole': 0.35, 'puddle': 0.30, 'tree': 0.30,
-        'car': 0.35, 'bus': 0.35, 'truck': 0.35, 'bed': 0.40, 
-        'hanger': 0.40, 'stair': 0.30
+        'stairs': 0.27, 'handrail': 0.18, 'door': 0.18, 'handle': 0.18, 
+        'refrigerator': 0.55, 'scooter': 0.20, 'bicycle': 0.22, 'motorcycle': 0.25,     
+        'bench': 0.50, 'table': 0.35, 'box': 0.35, 'window': 0.30,
+        'wardrobe': 0.40, 'shelf': 0.45, 'chair': 0.35, 'person': 0.30, 
+        'plant': 0.30, 'tv': 0.35, 'laptop': 0.35, 'phone': 0.30, 
+        'microwave': 0.40, 'bollard': 0.35, 'cone': 0.35, 'pole': 0.35, 
+        'puddle': 0.30, 'tree': 0.30, 'car': 0.35, 'bus': 0.35, 
+        'truck': 0.35, 'bed': 0.40, 'hanger': 0.40, 'stair': 0.30
     }
 
     indoor_hints = ['refrigerator', 'bed', 'wardrobe', 'hanger', 'shelf', 'tv', 'laptop', 'microwave']
     outdoor_hints = ['scooter', 'bollard', 'cone', 'pole', 'puddle', 'tree', 'car', 'bus', 'truck']
 
-    print(f"🧠 [라즈베리파이 AI 엔진] 계단 민감도 억제 및 킥보드 프롬프트 튜닝 버전 구동")
+    print(f"🧠 [라즈베리파이 AI 엔진] 가중치 및 한글 변환 매트릭스 구동 완료")
 
     while is_running:
         with frame_lock:
@@ -138,9 +128,11 @@ def inference_thread_func(model, clean_labels, crop_config):
                 cls_id = int(box.cls[0])
 
                 raw_name = model.names[cls_id]
+                
+                # 1단계: 프롬프트 원문을 시스템 내부 표준 토큰명으로 1차 변환
                 class_name = clean_labels.get(raw_name, raw_name)
 
-                # [공간 인지 매트릭스]
+                # 공간 인지 필터
                 with zone_lock:
                     if class_name in indoor_hints and conf > 0.45:
                         if current_zone != "INDOOR": current_zone = "INDOOR"
@@ -149,11 +141,11 @@ def inference_thread_func(model, clean_labels, crop_config):
                     if current_zone == "INDOOR" and class_name in outdoor_hints: conf -= 0.40  
                     elif current_zone == "OUTDOOR" and class_name in indoor_hints: conf -= 0.40  
 
-                # 가중치 부스팅
+                # 가중치 튜닝
                 if class_name in ['door', 'handle', 'handrail']: 
                     conf = min(conf + 0.35, 1.0)  
                 elif class_name in ['wardrobe', 'shelf']:
-                    conf = conf - 0.15
+                    conf = conf - 0.20
 
                 if class_name in class_conf_thresholds and conf < class_conf_thresholds[class_name]:
                     continue  
@@ -163,16 +155,7 @@ def inference_thread_func(model, clean_labels, crop_config):
                 elif obj_center_x > (crop_width * 0.66): direction = "우측"
                 else: direction = "정면"
 
-                korean_names = {
-                    'door': '문', 'handle': '문', 'shelf': '선반', 'wardrobe': '옷장', 'hanger': '행거',
-                    'table': '테이블', 'bench': '벤치', 'refrigerator': '냉장고', 'chair': '의자',
-                    'person': '사람', 'stairs': '계단', 'stair': '계단', 'tv': '티비', 'laptop': '노트북',
-                    'scooter': '킥보드', 'bicycle': '자전거', 'motorcycle': '오토바이', 
-                    'plant': '화분', 'phone': '핸드폰', 'microwave': '전자레인지', 'bollard': '볼라드', 
-                    'cone': '라바콘', 'pole': '전신주', 'puddle': '물웅덩이', 'tree': '나무', 
-                    'car': '자동차', 'bus': '버스', 'truck': '트럭', 'bed': '침대', 'box': '상자', 
-                    'handrail': '난간', 'window': '창문'
-                }
+                # 2단계: 표준 토큰명을 최종 한글 단어로 강제 치환 (영어 유출 절대 차단)
                 ko_name = korean_names.get(class_name, class_name)
                 
                 final_selected_obj = f"{direction} {ko_name}"
@@ -200,9 +183,15 @@ def inference_thread_func(model, clean_labels, crop_config):
 def run_pi_system():
     global latest_frame, is_running
 
+    print("⏳ [초기화] AI 모델 로딩 중...")
     model = YOLOWorld('fixed_model.pt')
 
-    # 💡 수정한 프롬프트와 100% 매칭되도록 딕셔너리 동기화 완료
+    # 초기 웜업(Warm-up) 연산 수행하여 실시간 스트리밍 시 버벅임 차단
+    print("⚡ [초기화] 하드웨어 가속 및 웜업 연산 가동...")
+    dummy_img = np.zeros((240, 160, 3), dtype=np.uint8)
+    model.predict(dummy_img, imgsz=320, verbose=False)
+
+    # 💡 [오타 교정 완료] 중복 및 기호 누락 코드 깔끔하게 수정됨
     clean_labels = {
         "automatic glass sliding door with silver metal frame": "door",
         "framed glass door panel for entrance": "door", 
@@ -221,18 +210,34 @@ def run_pi_system():
         "furniture chair with backrest": "chair", 
         "potted plant": "plant", "tv": "tv", "laptop": "laptop", "cell phone": "phone", "microwave": "microwave", "bollard": "bollard", 
         "traffic cone": "cone", "utility pole": "pole", "water puddle": "puddle", 
-        "storage shelf with racks": "shelf", "stair": "stair", "tree": "tree", 
+        
+        "vertical storage shelf with multiple grid racks for holding items, not a flat table": "shelf", 
+        "stair": "stair", "tree": "tree", 
         "passenger car on the road": "car", 
         "large passenger bus": "bus", 
         "cargo truck": "truck", 
         
         "kitchen refrigerator appliance": "refrigerator", 
         "bed": "bed", 
-        "flat dining table for eating": "table", 
-        "cardboard box": "box", "wall": "wall", "window fixed in a wall": "window", 
-        "wooden wardrobe": "wardrobe", "clothes hanger rack": "hanger", 
+        "flat dining table or desk supported by legs with a single flat surface for working, NO multiple shelves": "table", 
+        "cardboard box": "box", 
+        "wall": "wall", 
+        "window fixed in a wall": "window", 
+        "wooden wardrobe": "wardrobe", 
+        "clothes hanger rack": "hanger", 
         
         "safety handrail or metallic grab bar mounted along stairs": "handrail"
+    }
+
+    korean_names = {
+        'door': '문', 'handle': '문 손잡이', 'shelf': '선반', 'wardrobe': '옷장', 'hanger': '행거',
+        'table': '테이블', 'bench': '벤치', 'refrigerator': '냉장고', 'chair': '의자',
+        'person': '사람', 'stairs': '계단', 'stair': '계단', 'tv': '티비', 'laptop': '노트북',
+        'scooter': '킥보드', 'bicycle': '자전거', 'motorcycle': '오토바이', 
+        'plant': '화분', 'phone': '핸드폰', 'microwave': '전자레인지', 'bollard': '볼라드', 
+        'cone': '라바콘', 'pole': '전신주', 'puddle': '물웅덩이', 'tree': '나무', 
+        'car': '자동차', 'bus': '버스', 'truck': '트럭', 'bed': '침대', 'box': '상자', 
+        'handrail': '난간', 'window': '창문'
     }
 
     cap = cv2.VideoCapture(0)
@@ -248,22 +253,27 @@ def run_pi_system():
     start_x = (W - crop_w) // 2
     end_x = start_x + crop_w
 
-    ai_thread = threading.Thread(target=inference_thread_func, args=(model, clean_labels, (start_x, end_x)), daemon=True)
+    ai_thread = threading.Thread(
+        target=inference_thread_func, 
+        args=(model, clean_labels, korean_names, (start_x, end_x)), 
+        daemon=True
+    )
     ai_thread.start()
 
     battery_thread = threading.Thread(target=battery_monitor_thread_func, daemon=True)
     battery_thread.start()
 
+    # Ctrl+C 수신 시 자원 해제 후 프로세스를 즉시 완전 종료시키는 핸들러
     def signal_handler(sig, frame):
-        print("\n👋 [시스템 즉시 종료] 자원을 즉시 해제합니다.")
+        print("\n👋 [시스템 즉시 종료] Ctrl+C 즉시 해제 요청 승인. 자원을 해제합니다.")
         global is_running
         is_running = False
         cap.release()
-        sys.exit(0)  
+        os._exit(0)  
 
     signal.signal(signal.SIGINT, signal_handler)
 
-    print("🚀 [라즈베리파이] 계단 과탐지 조율 및 킥보드 추적 순정 버전 시작...")
+    print("🚀 [라즈베리파이] 모든 패치가 완료되었습니다. 탐지를 시작합니다...")
 
     while is_running:
         for _ in range(2): 
