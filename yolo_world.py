@@ -8,7 +8,10 @@ import os
 import signal  
 import sys
 
-# 라즈베리파이 CPU 초기 구동 최적화 및 스레드 고정
+from tts import VoiceManager
+from check_battery import get_estimated_remaining_time, check_under_voltage
+
+# 라즈베리파이 CPU 최적화
 torch.set_num_threads(2)
 
 latest_frame = None
@@ -18,6 +21,8 @@ is_running = True
 current_zone = "UNKNOWN"  
 zone_lock = threading.Lock()
 
+voice_engine = VoiceManager()
+
 def speak_pure_audio(text):
     def _say():
         try:
@@ -26,6 +31,47 @@ def speak_pure_audio(text):
             pass
     threading.Thread(target=_say, daemon=True).start()
 
+# [추가] 배터리 및 전압 상태를 주기적으로 모니터링하는 스레드 함수
+def battery_monitor_thread_func():
+    global is_running
+    
+    # 처음 실행 후 안정화를 위해 잠시 대기
+    time.sleep(5)
+    
+    # 알림 주기 설정을 위한 변수 (초 단위)
+    UNDER_VOLTAGE_CHECK_INTERVAL = 10  # 저전압은 10초마다 체크
+    BATTERY_STATUS_LOG_INTERVAL = 300   # 배터리 잔량 로그는 5분(300초)마다 출력
+    
+    last_voltage_check = 0
+    last_status_log = 0
+
+    print("[시스템 내부 모니터링] 배터리 및 전압 체크 스레드 가동 시작")
+
+    while is_running:
+        current_time = time.time()
+
+        # 1. 저전압 긴급 상황 체크 (vcgencmd 이용)
+        if current_time - last_voltage_check > UNDER_VOLTAGE_CHECK_INTERVAL:
+            voltage_warning = check_under_voltage()
+            if voltage_warning:
+                print(f"⚠️ [⚠️경고] {voltage_warning}")
+                # 음성 엔진을 통해 사용자에게 즉시 위험 경고 (우선순위 높임)
+                voice_engine.speak("경고. 전압이 낮습니다. 배터리를 점검하세요.", priority=5, debounce_time=10)
+            last_voltage_check = current_time
+
+        # 2. 잔여 시간 및 퍼센트 계산 및 로그 출력
+        if current_time - last_status_log > BATTERY_STATUS_LOG_INTERVAL:
+            remaining_min, percent = get_estimated_remaining_time()
+            print(f"[배터리 상태] 잔여 시간: 약 {remaining_min}분 ({percent}%)")
+            
+            # 배터리가 15% 이하로 떨어지면 경고 음성 출력
+            if percent <= 15 and percent > 0:
+                voice_engine.speak("배터리가 부족합니다.", priority=4, debounce_time=60)
+                
+            last_status_log = current_time
+
+        # CPU 과점유 방지를 위한 주기적 휴지
+        time.sleep(1)
 
 def inference_thread_func(model, clean_labels, korean_names, crop_config):
     global latest_frame, is_running, current_zone
@@ -120,7 +166,9 @@ def inference_thread_func(model, clean_labels, korean_names, crop_config):
                     current_time = time.time()
                     if (final_selected_obj != last_spoken_state) or (current_time - last_spoken_time > AUDIO_COOLDOWN):
                         print(f"[순정 즉시출력] 🎯 {final_selected_obj}")
-                        speak_pure_audio(final_selected_obj)
+                        
+                        voice_engine.speak(final_selected_obj, priority=3, debounce_time=AUDIO_COOLDOWN)
+
                         last_spoken_state = final_selected_obj
                         last_spoken_time = current_time
             else:
@@ -211,6 +259,9 @@ def run_pi_system():
         daemon=True
     )
     ai_thread.start()
+
+    battery_thread = threading.Thread(target=battery_monitor_thread_func, daemon=True)
+    battery_thread.start()
 
     # Ctrl+C 수신 시 자원 해제 후 프로세스를 즉시 완전 종료시키는 핸들러
     def signal_handler(sig, frame):
