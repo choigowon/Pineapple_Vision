@@ -1,6 +1,7 @@
 from ultralytics import YOLOE
 import cv2
 import time
+from collections import defaultdict, deque, Counter
 
 
 # ============================================================
@@ -9,27 +10,39 @@ import time
 
 MODEL_PATH = "yoloe_custom.pt"
 
+# USB 카메라
 # 0 = 노트북 웹캠
 # 1 = USB 카메라
 CAMERA_INDEX = 1
 
 # YOLOE
 CONF_THRESHOLD = 0.25
-IMAGE_SIZE = 416
+
+# 416 → 320
+# FPS 향상을 위한 설정
+IMAGE_SIZE = 320
 
 # 카메라 수평 시야각
 HORIZONTAL_FOV = 120.0
 
+# 최근 몇 프레임의 클래스 결과를 기억할지
+HISTORY_SIZE = 5
+
+# Tracking 방식
+TRACKER_CONFIG = "bytetrack.yaml"
+
 
 # ============================================================
-# 2. YOLOE 모델 불러오기
+# 2. YOLOE 모델 로드
 # ============================================================
 
-print("YOLOE 모델을 불러오는 중...")
+print("YOLOE 모델 로딩 중...")
 
-model = YOLOE(MODEL_PATH)
+model = YOLOE(
+    MODEL_PATH
+)
 
-print("YOLOE 모델 로드 완료")
+print("YOLOE 모델 로딩 완료")
 
 
 # ============================================================
@@ -37,12 +50,14 @@ print("YOLOE 모델 로드 완료")
 # ============================================================
 
 print(
-    f"USB 카메라 연결: index={CAMERA_INDEX}"
+    f"USB 카메라 연결: "
+    f"index={CAMERA_INDEX}"
 )
 
 cap = cv2.VideoCapture(
     CAMERA_INDEX
 )
+
 
 if not cap.isOpened():
 
@@ -54,124 +69,105 @@ if not cap.isOpened():
 
 
 # ============================================================
-# 4. 카메라 해상도
+# 4. 카메라 해상도 설정
 # ============================================================
 
 cap.set(
+
     cv2.CAP_PROP_FRAME_WIDTH,
+
     640
+
 )
 
 cap.set(
+
     cv2.CAP_PROP_FRAME_HEIGHT,
+
     480
+
 )
 
 
 # ============================================================
-# 5. 카메라 정보
+# 5. 카메라 실제 해상도 확인
 # ============================================================
 
 frame_width = int(
+
     cap.get(
+
         cv2.CAP_PROP_FRAME_WIDTH
+
     )
+
 )
 
 frame_height = int(
+
     cap.get(
+
         cv2.CAP_PROP_FRAME_HEIGHT
+
     )
+
 )
 
+
 print(
+
     f"카메라 해상도: "
     f"{frame_width} x "
     f"{frame_height}"
+
 )
 
 
 # ============================================================
-# 6. 위치 판단
+# 6. 객체별 Tracking 기록
+#
+# object_history[ID]
+#
+# 같은 객체의 최근 데이터를 저장
 # ============================================================
 
-def get_position(
-    center_x,
-    frame_width
-):
+object_history = defaultdict(
 
-    ratio = (
-        center_x /
-        frame_width
-    )
+    lambda: {
 
-    if ratio < 0.33:
+        "classes": deque(
 
-        return "LEFT"
+            maxlen=HISTORY_SIZE
 
-    elif ratio < 0.66:
+        ),
 
-        return "CENTER"
+        "confidences": deque(
 
-    else:
+            maxlen=HISTORY_SIZE
 
-        return "RIGHT"
+        )
 
+    }
 
-# ============================================================
-# 7. 화면 점유율
-# ============================================================
-
-def get_area_ratio(
-    x1,
-    y1,
-    x2,
-    y2,
-    frame_width,
-    frame_height
-):
-
-    box_width = (
-        x2 - x1
-    )
-
-    box_height = (
-        y2 - y1
-    )
-
-    box_area = (
-        box_width *
-        box_height
-    )
-
-    frame_area = (
-        frame_width *
-        frame_height
-    )
-
-    if frame_area <= 0:
-
-        return 0.0
-
-    return (
-        box_area /
-        frame_area
-    )
+)
 
 
 # ============================================================
-# 8. 수평 방향각
+# 7. 수평 방향각 계산
 # ============================================================
 
 def get_horizontal_angle(
+
     center_x,
-    frame_width,
-    horizontal_fov
+
+    frame_width
+
 ):
 
     normalized_x = (
 
         center_x -
+
         frame_width / 2
 
     ) / (
@@ -180,31 +176,41 @@ def get_horizontal_angle(
 
     )
 
+
     angle = (
 
         normalized_x *
-        (horizontal_fov / 2)
+
+        (
+            HORIZONTAL_FOV /
+            2
+        )
 
     )
+
 
     return angle
 
 
 # ============================================================
-# 9. 방향
+# 8. 방향 판단
 # ============================================================
 
 def get_direction(
+
     angle
+
 ):
 
     if angle < -20:
 
         return "LEFT"
 
+
     elif angle > 20:
 
         return "RIGHT"
+
 
     else:
 
@@ -212,26 +218,110 @@ def get_direction(
 
 
 # ============================================================
-# 10. 화면 안쪽으로 텍스트 위치 조정
+# 9. 화면 점유율 계산
+# ============================================================
+
+def get_area_ratio(
+
+    x1,
+
+    y1,
+
+    x2,
+
+    y2,
+
+    frame_width,
+
+    frame_height
+
+):
+
+    box_width = (
+
+        x2 -
+
+        x1
+
+    )
+
+
+    box_height = (
+
+        y2 -
+
+        y1
+
+    )
+
+
+    box_area = (
+
+        box_width *
+
+        box_height
+
+    )
+
+
+    frame_area = (
+
+        frame_width *
+
+        frame_height
+
+    )
+
+
+    if frame_area <= 0:
+
+        return 0.0
+
+
+    return (
+
+        box_area /
+
+        frame_area
+
+    )
+
+
+# ============================================================
+# 10. 화면 안쪽에 텍스트 표시
 # ============================================================
 
 def draw_label(
+
     frame,
+
     text,
+
     x,
-    y,
-    color=(0, 255, 0)
+
+    y
+
 ):
 
-    # OpenCV 폰트
-    font = cv2.FONT_HERSHEY_SIMPLEX
+    font = (
 
-    font_scale = 0.55
+        cv2.FONT_HERSHEY_SIMPLEX
+
+    )
+
+
+    scale = 0.55
+
 
     thickness = 2
 
-    # 텍스트 크기 계산
-    (text_width, text_height), baseline = (
+
+    (
+        text_width,
+
+        text_height
+
+    ), baseline = (
 
         cv2.getTextSize(
 
@@ -239,7 +329,7 @@ def draw_label(
 
             font,
 
-            font_scale,
+            scale,
 
             thickness
 
@@ -248,85 +338,156 @@ def draw_label(
     )
 
 
-    # ========================================================
-    # X 좌표 보정
-    # ========================================================
+    # --------------------------------------------------------
+    # 오른쪽 화면 밖 방지
+    # --------------------------------------------------------
 
-    # 오른쪽 화면 밖으로 나가는 경우
     if (
-        x + text_width
-        > frame.shape[1]
+
+        x +
+
+        text_width
+
+        >
+
+        frame.shape[1]
+
     ):
 
         x = (
+
             frame.shape[1]
-            - text_width
-            - 5
+
+            -
+
+            text_width
+
+            -
+
+            5
+
         )
 
 
-    # 왼쪽 화면 밖으로 나가는 경우
+    # --------------------------------------------------------
+    # 왼쪽 화면 밖 방지
+    # --------------------------------------------------------
+
     if x < 5:
 
         x = 5
 
 
-    # ========================================================
-    # Y 좌표 보정
-    # ========================================================
+    # --------------------------------------------------------
+    # 화면 위쪽 밖 방지
+    # --------------------------------------------------------
 
-    # 텍스트가 화면 위로 나가는 경우
-    if y - text_height < 0:
+    if (
 
-        # 아래쪽으로 이동
-        y = (
-            y +
-            text_height +
+        y -
+
+        text_height
+
+        < 0
+
+    ):
+
+        y += (
+
+            text_height
+
+            +
+
             10
+
         )
 
 
-    # 화면 아래쪽으로 나가는 경우
+    # --------------------------------------------------------
+    # 화면 아래쪽 밖 방지
+    # --------------------------------------------------------
+
     if (
-        y + baseline
-        > frame.shape[0]
+
+        y +
+
+        baseline
+
+        >
+
+        frame.shape[0]
+
     ):
 
         y = (
+
             frame.shape[0]
-            - baseline
-            - 5
+
+            -
+
+            baseline
+
+            -
+
+            5
+
         )
 
 
-    # ========================================================
-    # 배경 박스
-    # ========================================================
+    # --------------------------------------------------------
+    # 텍스트 배경
+    # --------------------------------------------------------
 
     cv2.rectangle(
 
         frame,
 
         (
+
             x - 3,
-            y - text_height - 3
+
+            y -
+
+            text_height -
+
+            3
+
         ),
 
         (
-            x + text_width + 3,
-            y + baseline + 3
+
+            x +
+
+            text_width +
+
+            3,
+
+            y +
+
+            baseline +
+
+            3
+
         ),
 
-        (0, 0, 0),
+        (
+
+            0,
+
+            0,
+
+            0
+
+        ),
 
         -1
 
     )
 
 
-    # ========================================================
+    # --------------------------------------------------------
     # 텍스트
-    # ========================================================
+    # --------------------------------------------------------
 
     cv2.putText(
 
@@ -335,15 +496,26 @@ def draw_label(
         text,
 
         (
+
             x,
+
             y
+
         ),
 
         font,
 
-        font_scale,
+        scale,
 
-        color,
+        (
+
+            0,
+
+            255,
+
+            0
+
+        ),
 
         thickness,
 
@@ -353,7 +525,7 @@ def draw_label(
 
 
 # ============================================================
-# 11. FPS
+# 11. FPS 변수
 # ============================================================
 
 prev_time = time.time()
@@ -363,68 +535,65 @@ prev_time = time.time()
 # 12. 메인 루프
 # ============================================================
 
-print()
-print(
-    "======================================"
-)
-
-print(
-    "YOLOE + USB 광각 카메라 시작"
-)
-
-print(
-    "======================================"
-)
-
-print(
-    "종료: Q"
-)
-
-print()
-
-
 while True:
 
 
     # ========================================================
-    # 카메라 읽기
+    # 카메라 프레임
     # ========================================================
 
     ret, frame = (
+
         cap.read()
+
     )
 
 
     if not ret:
 
         print(
+
             "❌ 카메라 프레임을 "
             "읽을 수 없습니다."
+
         )
 
         break
 
 
     # ========================================================
-    # 프레임 크기
+    # 실제 프레임 크기
     # ========================================================
 
     frame_height, frame_width = (
+
         frame.shape[:2]
+
     )
 
 
     # ========================================================
-    # YOLOE 추론
+    # YOLOE + Tracking
+    #
+    # imgsz = 320
+    #
+    # ByteTrack 사용
+    #
+    # persist=True
+    # → 같은 객체 ID 유지
     # ========================================================
 
-    results = model.predict(
+    results = model.track(
 
         source=frame,
 
         conf=CONF_THRESHOLD,
 
         imgsz=IMAGE_SIZE,
+
+        persist=True,
+
+        tracker=TRACKER_CONFIG,
 
         verbose=False
 
@@ -435,24 +604,146 @@ while True:
 
 
     # ========================================================
+    # Tracking ID가 없는 경우
+    # ========================================================
+
+    if (
+
+        result.boxes.id is None
+
+    ):
+
+        draw_label(
+
+            frame,
+
+            "No Objects",
+
+            10,
+
+            30
+
+        )
+
+
+        # FPS 계산
+
+        current_time = (
+
+            time.time()
+
+        )
+
+
+        fps = (
+
+            1 /
+
+            max(
+
+                current_time -
+
+                prev_time,
+
+                0.0001
+
+            )
+
+        )
+
+
+        prev_time = (
+
+            current_time
+
+        )
+
+
+        draw_label(
+
+            frame,
+
+            f"FPS: {fps:.1f}",
+
+            10,
+
+            60
+
+        )
+
+
+        cv2.imshow(
+
+            "YOLOE Tracking",
+
+            frame
+
+        )
+
+
+        if (
+
+            cv2.waitKey(1)
+
+            &
+
+            0xFF
+
+        ) == ord("q"):
+
+            break
+
+
+        continue
+
+
+    # ========================================================
     # 객체 처리
     # ========================================================
 
-    for box in result.boxes:
+    for box, track_id in zip(
+
+        result.boxes,
+
+        result.boxes.id
+
+    ):
 
 
         # ====================================================
-        # 클래스
+        # Tracking ID
+        # ====================================================
+
+        object_id = int(
+
+            track_id
+
+        )
+
+
+        # ====================================================
+        # 클래스 ID
         # ====================================================
 
         cls_id = int(
+
             box.cls[0]
+
         )
 
+
+        # ====================================================
+        # 클래스 이름
+        # ====================================================
+
         class_name = (
+
             result.names[
+
                 cls_id
+
             ]
+
         )
 
 
@@ -461,7 +752,9 @@ while True:
         # ====================================================
 
         confidence = float(
+
             box.conf[0]
+
         )
 
 
@@ -479,39 +772,66 @@ while True:
 
 
         # ====================================================
-        # 좌표 안전성 보정
+        # 좌표 보정
         # ====================================================
 
         x1 = max(
+
             0,
+
             min(
+
                 x1,
+
                 frame_width - 1
+
             )
+
         )
+
 
         y1 = max(
+
             0,
+
             min(
+
                 y1,
+
                 frame_height - 1
+
             )
+
         )
+
 
         x2 = max(
+
             0,
+
             min(
+
                 x2,
+
                 frame_width - 1
+
             )
+
         )
 
+
         y2 = max(
+
             0,
+
             min(
+
                 y2,
+
                 frame_height - 1
+
             )
+
         )
 
 
@@ -520,48 +840,16 @@ while True:
         # ====================================================
 
         center_x = (
-            x1 + x2
+
+            x1 +
+
+            x2
+
         ) / 2
 
 
         # ====================================================
-        # 방향
-        # ====================================================
-
-        position = (
-            get_position(
-
-                center_x,
-
-                frame_width
-
-            )
-        )
-
-
-        # ====================================================
-        # Area
-        # ====================================================
-
-        area_ratio = (
-
-            get_area_ratio(
-
-                x1,
-                y1,
-                x2,
-                y2,
-
-                frame_width,
-                frame_height
-
-            )
-
-        )
-
-
-        # ====================================================
-        # Angle
+        # 방향각
         # ====================================================
 
         angle = (
@@ -570,9 +858,7 @@ while True:
 
                 center_x,
 
-                frame_width,
-
-                HORIZONTAL_FOV
+                frame_width
 
             )
 
@@ -580,7 +866,7 @@ while True:
 
 
         # ====================================================
-        # Direction
+        # 방향
         # ====================================================
 
         direction = (
@@ -595,7 +881,124 @@ while True:
 
 
         # ====================================================
-        # Bounding Box
+        # 화면 점유율
+        # ====================================================
+
+        area_ratio = (
+
+            get_area_ratio(
+
+                x1,
+
+                y1,
+
+                x2,
+
+                y2,
+
+                frame_width,
+
+                frame_height
+
+            )
+
+        )
+
+
+        # ====================================================
+        # 최근 클래스 저장
+        # ====================================================
+
+        history = (
+
+            object_history[
+
+                object_id
+
+            ]
+
+        )
+
+
+        history[
+
+            "classes"
+
+        ].append(
+
+            class_name
+
+        )
+
+
+        history[
+
+            "confidences"
+
+        ].append(
+
+            confidence
+
+        )
+
+
+        # ====================================================
+        # 최근 클래스 투표
+        # ====================================================
+
+        class_counter = Counter(
+
+            history[
+
+                "classes"
+
+            ]
+
+        )
+
+
+        stable_class = (
+
+            class_counter
+
+            .most_common(1)[0][0]
+
+        )
+
+
+        # ====================================================
+        # 평균 Confidence
+        # ====================================================
+
+        avg_confidence = (
+
+            sum(
+
+                history[
+
+                    "confidences"
+
+                ]
+
+            )
+
+            /
+
+            len(
+
+                history[
+
+                    "confidences"
+
+                ]
+
+            )
+
+        )
+
+
+        # ====================================================
+        # Bounding Box 표시
         # ====================================================
 
         cv2.rectangle(
@@ -603,16 +1006,30 @@ while True:
             frame,
 
             (
+
                 x1,
+
                 y1
+
             ),
 
             (
+
                 x2,
+
                 y2
+
             ),
 
-            (0, 255, 0),
+            (
+
+                0,
+
+                255,
+
+                0
+
+            ),
 
             2
 
@@ -620,32 +1037,27 @@ while True:
 
 
         # ====================================================
-        # 객체 이름
+        # 객체 정보
         # ====================================================
 
-        label_text = (
+        label = (
 
-            f"{class_name} "
-            f"{confidence:.2f}"
+            f"ID {object_id} | "
+
+            f"{stable_class}"
 
         )
 
-
-        # ====================================================
-        # 객체 이름 표시
-        # ====================================================
 
         draw_label(
 
             frame,
 
-            label_text,
+            label,
 
             x1,
 
-            y1 - 5,
-
-            (0, 255, 0)
+            y1 - 5
 
         )
 
@@ -654,30 +1066,28 @@ while True:
         # 상세 정보
         # ====================================================
 
-        info_text = (
+        info = (
 
             f"{direction} "
+
             f"{angle:+.0f}deg "
-            f"Area:{area_ratio:.2f}"
+
+            f"A:{area_ratio:.2f} "
+
+            f"C:{avg_confidence:.2f}"
 
         )
 
-
-        # ====================================================
-        # 상세 정보 표시
-        # ====================================================
 
         draw_label(
 
             frame,
 
-            info_text,
+            info,
 
             x1,
 
-            y2 + 20,
-
-            (0, 255, 255)
+            y2 + 20
 
         )
 
@@ -688,9 +1098,13 @@ while True:
 
         print(
 
-            f"[{class_name}] "
+            f"[ID {object_id}] "
 
-            f"Conf={confidence:.2f} | "
+            f"Raw={class_name} | "
+
+            f"Stable={stable_class} | "
+
+            f"Conf={avg_confidence:.2f} | "
 
             f"Direction={direction} | "
 
@@ -710,16 +1124,30 @@ while True:
         frame,
 
         (
+
             frame_width // 2,
+
             0
+
         ),
 
         (
+
             frame_width // 2,
+
             frame_height
+
         ),
 
-        (255, 0, 0),
+        (
+
+            255,
+
+            0,
+
+            0
+
+        ),
 
         2
 
@@ -730,13 +1158,21 @@ while True:
     # FPS 계산
     # ========================================================
 
-    current_time = time.time()
+    current_time = (
+
+        time.time()
+
+    )
+
 
     fps = (
 
         1 /
+
         max(
+
             current_time -
+
             prev_time,
 
             0.0001
@@ -745,7 +1181,12 @@ while True:
 
     )
 
-    prev_time = current_time
+
+    prev_time = (
+
+        current_time
+
+    )
 
 
     # ========================================================
@@ -760,9 +1201,7 @@ while True:
 
         10,
 
-        30,
-
-        (0, 255, 255)
+        30
 
     )
 
@@ -773,7 +1212,7 @@ while True:
 
     cv2.imshow(
 
-        "YOLOE - USB Wide Angle Camera",
+        "YOLOE Tracking",
 
         frame
 
@@ -787,7 +1226,10 @@ while True:
     key = (
 
         cv2.waitKey(1)
-        & 0xFF
+
+        &
+
+        0xFF
 
     )
 
@@ -805,7 +1247,11 @@ cap.release()
 
 cv2.destroyAllWindows()
 
+
 print()
+
 print(
+
     "프로그램 종료"
+
 )
