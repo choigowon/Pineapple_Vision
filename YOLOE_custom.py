@@ -3,11 +3,16 @@ from ultralytics import YOLOE
 model=YOLOE("yoloe-26n-seg.pt")
 
 custom_classes=[
-    "a standard room door",
+    "a closed room door",
+    "an open room door",
     "a glass door",
-    "a wardrobe cabinet",
-    "an open storage shelf",
-    "a refrigerator",
+    "a wardrobe closet",
+    "a freestanding garment rack",
+    "an electrical power strip",
+    "a storage shelf",
+    "an open shelving unit",
+
+    "refrigerator",
     "stairs",
     "ramp",
 
@@ -19,7 +24,6 @@ custom_classes=[
     "truck",
 
     "sink",
-    "stop sign",
     "bench",
     "chair",
     "potted plant",
@@ -31,9 +35,7 @@ custom_classes=[
     "table",
     "cardboard box",
 
-    "wall",
     "window",
-    "clothes rack",
 
     "bollard",
     "traffic cone",
@@ -45,5 +47,5 @@ custom_classes=[
 model.set_classes(custom_classes)
 model.save("yoloe_custom_26n.pt")
 
-print("✅ YOLOE-26N 커스텀 모델 생성 완료")
-print("📁 저장 파일: yoloe_custom_26n.pt")
+print("YOLOE-26N custom model created")
+print("Saved: yoloe_custom_26n.pt")
