@@ -1,13 +1,20 @@
 from ultralytics import YOLOE
-import cv2
+import cv2,time,math
+from collections import deque
 
 MODEL_PATH="yoloe_custom_26n.pt"
 CAMERA_INDEX=1
-CONF_THRESHOLD=0.30
+CONF_THRESHOLD=0.25
 IMAGE_SIZE=320
 TRACKER="bytetrack.yaml"
+RISK_THRESHOLD=0.50
+HISTORY_SECONDS=1.0
+HISTORY_LENGTH=30
+SMOOTH_LENGTH=5
+LOST_TIMEOUT=0.5
+APPROACH_THRESHOLD=0.02
 
-print("YOLOE-26N loading...")
+print("YOLOE loading...")
 model=YOLOE(MODEL_PATH)
 print("Model loaded.")
 
@@ -20,73 +27,205 @@ if not cap.isOpened():
     print("Camera open failed.")
     exit()
 
+track_history={}
+risk_history={"LEFT":deque(maxlen=SMOOTH_LENGTH),"CENTER":deque(maxlen=SMOOTH_LENGTH),"RIGHT":deque(maxlen=SMOOTH_LENGTH)}
+prev_time=time.time()
+
 print("Camera started.")
 print("Q : Quit")
 
 while True:
     ret,frame=cap.read()
-
     if not ret:
         print("Frame read failed.")
         break
 
-    results=model.track(
-        source=frame,
-        conf=CONF_THRESHOLD,
-        imgsz=IMAGE_SIZE,
-        persist=True,
-        tracker=TRACKER,
-        verbose=False
-    )
+    height,width=frame.shape[:2]
+    left_boundary=width//3
+    right_boundary=(width*2)//3
+    now=time.time()
 
+    left_risk=0.0
+    center_risk=0.0
+    right_risk=0.0
+
+    results=model.track(source=frame,conf=CONF_THRESHOLD,imgsz=IMAGE_SIZE,persist=True,tracker=TRACKER,verbose=False)
     result=results[0]
 
+    detected_ids=set()
+
     if result.boxes.id is not None:
-        for box,track_id in zip(result.boxes,result.boxes.id):
+        masks=result.masks.data if result.masks is not None else None
+
+        for index,(box,track_id) in enumerate(zip(result.boxes,result.boxes.id)):
             x1,y1,x2,y2=map(int,box.xyxy[0].tolist())
             cls_id=int(box.cls[0])
             confidence=float(box.conf[0])
             object_id=int(track_id)
             class_name=result.names[cls_id]
+            detected_ids.add(object_id)
 
-            cv2.rectangle(
-                frame,
-                (x1,y1),
-                (x2,y2),
-                (0,255,0),
-                2
-            )
+            cx=(x1+x2)//2
+            cy=(y1+y2)//2
+            box_area=max((x2-x1)*(y2-y1),1)
+            frame_area=width*height
+            area_ratio=box_area/frame_area
 
-            label=f"ID:{object_id} {class_name} {confidence:.2f}"
+            if object_id not in track_history:
+                track_history[object_id]={"history":deque(maxlen=HISTORY_LENGTH),"last_seen":now,"last_risk":0.0,"last_zone":"CENTER","last_name":class_name,"last_box":(x1,y1,x2,y2)}
 
-            cv2.putText(
-                frame,
-                label,
-                (x1,max(y1-10,20)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0,255,0),
-                2
-            )
+            state=track_history[object_id]
+            state["last_seen"]=now
+            state["last_name"]=class_name
+            state["last_box"]=(x1,y1,x2,y2)
+            state["history"].append((now,area_ratio,cx,cy))
 
-    cv2.putText(
-        frame,
-        "MODE: ALL OBJECT",
-        (10,30),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (0,255,255),
-        2
-    )
+            history=state["history"]
+            old_area=area_ratio
 
-    cv2.imshow(
-        "YOLOE-26N Object Detection",
-        frame
-    )
+            for t,a,px,py in history:
+                if now-t>=HISTORY_SECONDS:
+                    old_area=a
+                    break
 
-    key=cv2.waitKey(1)&0xFF
+            area_growth=(area_ratio-old_area)/max(old_area,0.0001)
 
-    if key==ord("q"):
+            if len(history)>=3 and area_growth>APPROACH_THRESHOLD:
+                movement_status="APPROACHING"
+                approach_score=min(max(area_growth*3.0,0.0),1.0)
+            elif len(history)>=3 and area_growth<-APPROACH_THRESHOLD:
+                movement_status="MOVING AWAY"
+                approach_score=0.0
+            else:
+                movement_status="STABLE"
+                approach_score=0.0
+
+            # Segmentation Mask의 가장 아래쪽 위치
+            mask_bottom_ratio=cy/height
+
+            if masks is not None and index<len(masks):
+                mask=masks[index].cpu().numpy()
+                mask=cv2.resize(mask,(width,height),interpolation=cv2.INTER_NEAREST)
+                binary_mask=(mask>0.5).astype("uint8")
+
+                if cv2.countNonZero(binary_mask)>0:
+                    points=cv2.findNonZero(binary_mask)
+                    mask_bottom=int(points[:,:,1].max())
+                    mask_bottom_ratio=mask_bottom/height
+
+                    overlay=frame.copy()
+                    overlay[binary_mask>0]=(0,255,0)
+                    frame=cv2.addWeighted(frame,0.85,overlay,0.15,0)
+
+            # 가까운 물체일수록 급격히 증가하는 비선형 위험도
+            proximity=max(0.0,(mask_bottom_ratio-0.35)/0.65)
+            proximity_risk=proximity**1.8
+
+            # Bounding Box 크기 위험도
+            size_risk=min(area_ratio*8.0,1.0)
+
+            # 화면 아래쪽 위치 위험도
+            position_risk=max(0.0,(mask_bottom_ratio-0.40)/0.60)
+            position_risk=min(position_risk,1.0)
+
+            # 좌우 방향
+            if cx<left_boundary:
+                zone="LEFT"
+                zone_center=width/6
+            elif cx<right_boundary:
+                zone="CENTER"
+                zone_center=width/2
+            else:
+                zone="RIGHT"
+                zone_center=width*5/6
+
+            # 중앙 보행 경로와의 겹침
+            horizontal_distance=abs(cx-width/2)/(width/2)
+            path_overlap=max(0.0,1.0-horizontal_distance)
+            path_overlap=path_overlap**0.7
+
+            # 화면 아래쪽에 있고 중앙에 가까울수록 충돌 위험 증가
+            collision_risk=(proximity_risk*0.30)+(size_risk*0.15)+(position_risk*0.15)+(path_overlap*0.25)+(approach_score*0.15)
+            collision_risk=min(max(collision_risk,0.0),1.0)
+
+            state["last_risk"]=collision_risk
+            state["last_zone"]=zone
+
+            if zone=="LEFT":
+                left_risk=max(left_risk,collision_risk)
+            elif zone=="CENTER":
+                center_risk=max(center_risk,collision_risk)
+            else:
+                right_risk=max(right_risk,collision_risk)
+
+            cv2.rectangle(frame,(x1,y1),(x2,y2),(0,255,0),2)
+            label=f"ID:{object_id} {class_name} {confidence:.2f} R:{collision_risk:.2f}"
+            cv2.putText(frame,label,(x1,max(y1-10,20)),cv2.FONT_HERSHEY_SIMPLEX,0.45,(0,255,0),2)
+            cv2.putText(frame,movement_status,(x1,min(y2+20,height-10)),cv2.FONT_HERSHEY_SIMPLEX,0.45,(0,255,255),2)
+
+    # 검출이 잠시 사라진 객체의 위험도 유지
+    for object_id,state in list(track_history.items()):
+        if object_id not in detected_ids:
+            lost_time=now-state["last_seen"]
+
+            if lost_time<LOST_TIMEOUT:
+                zone=state["last_zone"]
+                decay=max(0.0,1.0-(lost_time/LOST_TIMEOUT))
+                retained_risk=state["last_risk"]*decay
+
+                if zone=="LEFT":
+                    left_risk=max(left_risk,retained_risk)
+                elif zone=="CENTER":
+                    center_risk=max(center_risk,retained_risk)
+                else:
+                    right_risk=max(right_risk,retained_risk)
+
+            elif lost_time>2.0:
+                del track_history[object_id]
+
+    # 위험도 시간 안정화
+    risk_history["LEFT"].append(left_risk)
+    risk_history["CENTER"].append(center_risk)
+    risk_history["RIGHT"].append(right_risk)
+
+    left_s=sum(risk_history["LEFT"])/len(risk_history["LEFT"])
+    center_s=sum(risk_history["CENTER"])/len(risk_history["CENTER"])
+    right_s=sum(risk_history["RIGHT"])/len(risk_history["RIGHT"])
+
+    # 안전 방향 판단
+    safe_left=left_s<RISK_THRESHOLD
+    safe_center=center_s<RISK_THRESHOLD
+    safe_right=right_s<RISK_THRESHOLD
+
+    if safe_center:
+        direction="FORWARD"
+    elif safe_left and safe_right:
+        direction="LEFT" if left_s<=right_s else "RIGHT"
+    elif safe_left:
+        direction="LEFT"
+    elif safe_right:
+        direction="RIGHT"
+    else:
+        direction="STOP"
+
+    # 화면 표시
+    cv2.line(frame,(left_boundary,0),(left_boundary,height),(255,255,255),1)
+    cv2.line(frame,(right_boundary,0),(right_boundary,height),(255,255,255),1)
+
+    cv2.putText(frame,f"LEFT: {left_s:.2f}",(10,40),cv2.FONT_HERSHEY_SIMPLEX,0.6,(0,255,0),2)
+    cv2.putText(frame,f"CENTER: {center_s:.2f}",(10,70),cv2.FONT_HERSHEY_SIMPLEX,0.6,(0,255,255),2)
+    cv2.putText(frame,f"RIGHT: {right_s:.2f}",(10,100),cv2.FONT_HERSHEY_SIMPLEX,0.6,(0,255,0),2)
+    cv2.putText(frame,f"DIRECTION: {direction}",(10,145),cv2.FONT_HERSHEY_SIMPLEX,0.8,(0,0,255),2)
+
+    current_time=time.time()
+    fps=1.0/max(current_time-prev_time,0.001)
+    prev_time=current_time
+
+    cv2.putText(frame,f"FPS: {fps:.1f}",(10,180),cv2.FONT_HERSHEY_SIMPLEX,0.6,(255,255,0),2)
+
+    cv2.imshow("YOLOE Navigation",frame)
+
+    if cv2.waitKey(1)&0xFF==ord("q"):
         break
 
 cap.release()
