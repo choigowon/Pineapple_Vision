@@ -23,6 +23,7 @@ import time
 import threading
 import queue
 import subprocess
+import base64
 from collections import deque
 
 import cv2
@@ -47,7 +48,7 @@ IMU_BAUDRATE = 115200
 CONFIDENCE = 0.35
 STATE_CONFIRM_FRAMES = 4
 DANGER_CONFIRM_FRAMES = 2
-SPEECH_COOLDOWN = 0.35
+SPEECH_COOLDOWN = 1.0
 SPECIAL_MIN_CONF = 0.75
 ELEVATOR_MIN_CONF = 0.95
 AUDIO_DIR = "audio"   # wav 파일이 있으면 TTS보다 우선 사용
@@ -55,8 +56,8 @@ AUDIO_DIR = "audio"   # wav 파일이 있으면 TTS보다 우선 사용
 # YOLOE open-vocabulary prompts
 PROMPTS = [
     # 보행 방해물
-    "box", "clothes rack", "window", "desk", "chair", "bed", "shelf",
-    "wardrobe", "kitchen sink", "refrigerator", "tree", "bench", "car",
+    "box", "clothes rack", "clothing rack", "hanger rack", "coat rack", "clothes hanger", "wardrobe", "closet", "window", "desk", "chair", "bed", "shelf",
+    "wardrobe", "freestanding wardrobe", "closet cabinet", "clothes closet", "kitchen sink", "refrigerator", "tree", "bench", "car",
     "microwave", "television", "bollard", "potted plant", "traffic cone",
     "utility pole", "bicycle", "person", "laptop", "mobile phone",
     # 특수 상황
@@ -76,14 +77,14 @@ DOOR_LABELS = {
 }
 DOOR_COMPONENT_LABELS = {"door handle", "doorknob", "push bar"}
 HANDLE_LABELS = {"door handle", "doorknob"}
-HANDLE_MIN_CONF = 0.88
+HANDLE_MIN_CONF = 0.92
 DOOR_TYPE_LABELS = DOOR_LABELS - {"door", "open door", "closed door"}
 STAIR_LABELS = {"stairs", "staircase", "stair landing"}
 CROSSWALK_LABELS = {"crosswalk", "zebra crossing"}
 VEHICLE_LABELS = {"car"}
 
 KOREAN_LABELS = {
-    "box":"상자", "clothes rack":"행거", "window":"창문", "desk":"책상",
+    "box":"상자", "clothes rack":"행거", "clothing rack":"행거", "hanger rack":"행거", "coat rack":"행거", "freestanding wardrobe":"옷장", "closet cabinet":"옷장", "clothes closet":"옷장", "clothes hanger":"옷걸이", "wardrobe":"옷장", "closet":"옷장", "window":"창문", "desk":"책상",
     "chair":"의자", "bed":"침대", "shelf":"선반", "wardrobe":"옷장",
     "kitchen sink":"싱크대", "refrigerator":"냉장고", "tree":"나무", "bench":"벤치",
     "car":"차량", "microwave":"전자레인지", "television":"텔레비전",
@@ -157,70 +158,45 @@ class OptionalIMU:
                 self.parse_line(raw)
 
 class Speech:
-    """새 안내가 나오면 이전 안내를 중단하고 최신 안내로 전환한다."""
+    """Windows SAPI를 한 문장씩 실행한다. Korean은 EncodedCommand로 전달한다."""
     def __init__(self):
         self.jobs = queue.Queue(maxsize=1)
-        self.pending = set()
-        self.last_time = {}
-        self.proc = None
-        self.lock = threading.Lock()
+        self.last_time = 0.0
         threading.Thread(target=self._worker, daemon=True).start()
 
     def _worker(self):
         while True:
-            key, text = self.jobs.get()
+            text = self.jobs.get()
             try:
-                safe = text.replace("'", "''")
-                command = (
+                ps = (
                     "Add-Type -AssemblyName System.Speech; "
                     "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                    "$s.Volume=100; $s.Rate=1; $s.Speak('" + safe + "'); $s.Dispose()"
+                    "$s.Volume=100; $s.Rate=1; $s.Speak(" + repr(text) + "); $s.Dispose()"
                 )
-                with self.lock:
-                    self.proc = subprocess.Popen(
-                        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                    )
-                    proc = self.proc
-                proc.wait(timeout=8)
-            except Exception:
-                with self.lock:
-                    if self.proc and self.proc.poll() is None:
-                        self.proc.kill()
+                encoded = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
+                subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10
+                )
+            except Exception as exc:
+                print("음성 출력 오류:", exc)
             finally:
-                with self.lock:
-                    self.pending.discard(key)
-                    self.proc = None
                 self.jobs.task_done()
 
     def say(self, key, text, force=False):
         now = time.time()
-        with self.lock:
-            # 같은 대상은 현재 말하는 중이면 다시 끊지 않는다.
-            if key in self.pending:
-                return
-            if not force and now - self.last_time.get(key, 0.0) < SPEECH_COOLDOWN:
-                return
-            self.last_time[key] = now
-            # 현재 문장을 즉시 중단한다.
-            if self.proc and self.proc.poll() is None:
-                try:
-                    self.proc.kill()
-                except Exception:
-                    pass
-            # 대기 중인 이전 문장 제거
-            while True:
-                try:
-                    old_key, _ = self.jobs.get_nowait()
-                    self.pending.discard(old_key)
-                    self.jobs.task_done()
-                except queue.Empty:
-                    break
-            self.pending.add(key)
-            try:
-                self.jobs.put_nowait((key, text))
-            except queue.Full:
-                self.pending.discard(key)
+        if not force and now - self.last_time < 0.5:
+            return
+        self.last_time = now
+        try:
+            self.jobs.get_nowait()
+            self.jobs.task_done()
+        except queue.Empty:
+            pass
+        try:
+            self.jobs.put_nowait(text)
+        except queue.Full:
+            pass
 
 
 def label_of(result, cls_id):
@@ -379,6 +355,21 @@ class SituationMachine:
         return diff
 
 
+def detection_priority(det, state, width, height):
+    """현재 프레임에서 안내할 대상 하나만 선택한다.
+    우선순위: 안내 영역 포함 여부 -> 화면 하단 위치(가까움 추정) -> 박스 크기 -> 중앙.
+    실제 거리를 확정하지 않고 영상 내 상대 우선순위만 사용한다.
+    """
+    label, conf, x1, y1, x2, y2 = det
+    rx1, ry1, rx2, ry2 = roi(width, height)
+    inside = x1 >= rx1 and x2 <= rx2 and y1 >= ry1 and y2 <= ry2
+    bottom = y2 / max(1, height)
+    area = ((x2-x1) * (y2-y1)) / max(1, width*height)
+    center = abs(((x1+x2)/2) - width/2) / max(1, width)
+    # 특수 상황 상태에서는 특수 대상만 active에 남지만, 그 안에서도 하나만 선택한다.
+    return (0 if inside else 1, -bottom, -area, center, -conf)
+
+
 def main():
     print("YOLOE 모델 로딩 중...")
     model = YOLOE(MODEL_PATH)
@@ -415,12 +406,12 @@ def main():
         # 상태별 active는 '안내에 사용할 후보'만 고르는 용도다.
         # 문 안내 범위 밖의 문은 인식하되 안내 후보에서는 제외한다.
         # 냉장고·옷장·창문이 문으로 바뀌는 경우를 문 후보에서 제거한다.
-        solid_objects = [d for d in all_dets if d[0] in {"refrigerator", "wardrobe", "window", "garage door"}
+        solid_objects = [d for d in all_dets if d[0] in {"refrigerator", "wardrobe", "closet", "window", "garage door"}
                          and in_walk_corridor(d[2], d[4], d[3], d[5], w, h)]
         raw_doors = [d for d in all_dets if d[0] in DOOR_LABELS
                      and d[1] >= (ELEVATOR_MIN_CONF if d[0] == "elevator door" else SPECIAL_MIN_CONF)
                      and special_is_near(d[2], d[3], d[4], d[5], w, h)]
-        doors = [d for d in raw_doors if not any(box_iou(d, obj) > 0.25 for obj in solid_objects if obj[0] != "garage door")]
+        doors = [d for d in raw_doors if not any(box_iou(d, obj) > 0.12 for obj in solid_objects if obj[0] in {"refrigerator", "wardrobe", "window"})]
         components = [d for d in all_dets if d[0] in DOOR_COMPONENT_LABELS and d[1] >= HANDLE_MIN_CONF]
         valid_components = [d for d in components if component_belongs_to_door(d, doors, w, h)]
         # 중앙의 유효한 문/손잡이만 상태 전환에 사용한다.
@@ -435,21 +426,14 @@ def main():
         # 가까운 문이 화면 밖으로 잘려 손잡이만 보이는 경우도 문 상태로 전환한다.
         context_dets.extend(valid_components)
         state = machine.update(context_dets)
-        if state == "WALK":
-            active = [d for d in all_dets if d[0] not in DOOR_LABELS | DOOR_COMPONENT_LABELS | STAIR_LABELS | CROSSWALK_LABELS
-                      and in_walk_corridor(d[2], d[4], d[3], d[5], w, h)]
-        elif state == "DOOR":
-            # 부속품만 검출된 경우에는 문 안내를 하지 않는다.
-            active = doors + valid_components
-        elif state == "STAIRS":
-            active = [d for d in all_dets if d[0] in STAIR_LABELS and d[1] >= SPECIAL_MIN_CONF and special_is_near(d[2], d[3], d[4], d[5], w, h)]
-        else:
-            active = [d for d in all_dets
-                      if d[0] in CROSSWALK_LABELS
-                      and special_is_near(d[2], d[3], d[4], d[5], w, h)]
+        # 테스트 단계: ROI와 상태별 필터를 끄고, 검출된 모든 대상을 안내 후보로 사용한다.
+        # 차량도 포함하되, 한 프레임에서 한 문장으로 묶어 음성이 겹치지 않게 한다.
+        active = [d for d in all_dets if d[1] >= CONFIDENCE]
 
-        active.sort(key=lambda d: abs(((d[2] + d[4]) / 2) - w / 2))
+        active.sort(key=lambda d: detection_priority(d, state, w, h))
         primary = active[0] if active else None
+        # active는 우선순위 정렬 후 첫 번째 하나만 사용한다.
+        active = [primary] if primary is not None else []
         # 대상이 바뀌거나 사라지면 이전 대상의 연속 카운트를 즉시 초기화한다.
         current_key = f"{primary[0]}_{zone(primary[2], primary[4], w)}" if primary else None
         if current_key != danger_candidate:
@@ -457,18 +441,25 @@ def main():
             danger_count = 1 if current_key else 0
 
         # 상태별 서브모듈
-        if state == "WALK" and primary:
-            # 일반 사물은 현재 가장 중요한 대상 하나만 짧게 안내한다.
-            label, _, x1, y1, x2, y2 = primary
-            if label != "car":
-                pos = zone(x1, x2, w)
+        if state == "WALK" and active:
+            # 현재 검출된 대상을 한 문장으로 묶어 한 번만 출력한다.
+            items = []
+            seen = set()
+            for item in active:
+                label, _, x1, y1, x2, y2 = item
                 ko = KOREAN_LABELS.get(label, label)
-                speech.say(f"walk_{label}_{pos}", f"{pos} {ko}")
+                pos = zone(x1, x2, w)
+                token = (pos, ko)
+                if token not in seen:
+                    seen.add(token)
+                    items.append(f"{pos} {ko}")
+            if items:
+                speech.say("all_objects", ", ".join(items) + ".")
 
         elif state == "DOOR" and primary:
             label, conf, x1, y1, x2, y2 = primary
             if label in HANDLE_LABELS and label in {d[0] for d in valid_components}:
-                speech.say("handle_" + label, f"{zone(x1, x2, w)} 손잡이, 당기거나 미세요.")
+                speech.say("handle_" + label, f"{zone(x1, x2, w)} 손잡이입니다. 당기거나 미세요.")
             elif label == "push bar" and label in {d[0] for d in valid_components}:
                 speech.say("push_bar", "푸시바입니다. 앞으로 미세요.")
             elif label in DOOR_LABELS:
