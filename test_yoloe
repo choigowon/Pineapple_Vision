@@ -1,233 +1,497 @@
-from ultralytics import YOLOE
-import cv2,time,math
+"""
+YOLOE 기반 상황형 보행 보조 Windows 프로토타입
+
+핵심 원칙
+- 일반 모드 없음: WALK(일반 보행) 상태에서 충돌 위험 후보만 안내
+- 길 안내/경로 결정 없음
+- 화면 속 물체 크기로 실제 거리를 확정하지 않음
+- 시간에 따른 박스 변화로 '접근 가능성'만 추정
+- 문/계단/횡단보도 감지 시 해당 서브모듈로 전환
+- IMU는 선택 사항: Windows에서는 USB 시리얼 IMU를 연결하면 사용
+
+키
+- Q: 종료
+- 1: 보행 상태 강제
+- 2: 문 상태 강제
+- 3: 계단 상태 강제
+- 4: 횡단보도 상태 강제
+- A: 자동 상태 전환
+"""
+
+import os
+import time
+import threading
+import queue
+import subprocess
 from collections import deque
 
-MODEL_PATH="yoloe_custom_26n.pt"
-CAMERA_INDEX=1
-CONF_THRESHOLD=0.25
-IMAGE_SIZE=320
-TRACKER="bytetrack.yaml"
-RISK_THRESHOLD=0.50
-HISTORY_SECONDS=1.0
-HISTORY_LENGTH=30
-SMOOTH_LENGTH=5
-LOST_TIMEOUT=0.5
-APPROACH_THRESHOLD=0.02
+import cv2
+import numpy as np
+import pyttsx3
+from ultralytics import YOLOE
 
-print("YOLOE loading...")
-model=YOLOE(MODEL_PATH)
-print("Model loaded.")
+try:
+    import winsound
+except ImportError:
+    winsound = None
 
-cap=cv2.VideoCapture(CAMERA_INDEX)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH,640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT,480)
-cap.set(cv2.CAP_PROP_BUFFERSIZE,1)
+try:
+    import serial
+except ImportError:
+    serial = None
 
-if not cap.isOpened():
-    print("Camera open failed.")
-    exit()
+MODEL_PATH = "yoloe-26n-seg.pt"
+CAMERA_INDEX = 0
+IMU_PORT = None       # 예: "COM5". 없으면 None
+IMU_BAUDRATE = 115200
+CONFIDENCE = 0.35
+STATE_CONFIRM_FRAMES = 12
+DANGER_CONFIRM_FRAMES = 2
+SPEECH_COOLDOWN = 0.8
+SPECIAL_MIN_CONF = 0.78
+ELEVATOR_MIN_CONF = 0.90
+AUDIO_DIR = "audio"   # wav 파일이 있으면 TTS보다 우선 사용
 
-track_history={}
-risk_history={"LEFT":deque(maxlen=SMOOTH_LENGTH),"CENTER":deque(maxlen=SMOOTH_LENGTH),"RIGHT":deque(maxlen=SMOOTH_LENGTH)}
-prev_time=time.time()
+# YOLOE open-vocabulary prompts
+PROMPTS = [
+    # 보행 방해물
+    "box", "clothes rack", "window", "desk", "chair", "bed", "shelf",
+    "wardrobe", "kitchen sink", "refrigerator", "tree", "bench", "car",
+    "microwave", "television", "bollard", "potted plant", "traffic cone",
+    "utility pole", "bicycle", "person", "laptop", "mobile phone",
+    # 특수 상황
+    "door", "open door", "closed door", "sliding door", "automatic door",
+    "glass door", "sliding glass door", "hinged door", "swing door", "double door",
+    "folding door", "screen door", "garage door",
+    "emergency exit door",
+    "stairs", "staircase", "stair landing", "crosswalk", "zebra crossing",
+    "elevator door",
+]
 
-print("Camera started.")
-print("Q : Quit")
+DOOR_LABELS = {
+    "door", "open door", "closed door", "sliding door", "automatic door",
+    "glass door", "sliding glass door", "hinged door", "swing door", "double door",
+    "folding door", "screen door", "garage door",
+    "emergency exit door",
+}
+DOOR_COMPONENT_LABELS = set()
+HANDLE_LABELS = set()
+HANDLE_MIN_CONF = 0.92
+DOOR_TYPE_LABELS = DOOR_LABELS - {"door", "open door", "closed door"}
+STAIR_LABELS = {"stairs", "staircase", "stair landing"}
+CROSSWALK_LABELS = {"crosswalk", "zebra crossing"}
+VEHICLE_LABELS = {"car"}
 
-while True:
-    ret,frame=cap.read()
-    if not ret:
-        print("Frame read failed.")
-        break
+KOREAN_LABELS = {
+    "box":"상자", "clothes rack":"행거", "window":"창문", "desk":"책상",
+    "chair":"의자", "bed":"침대", "shelf":"선반", "wardrobe":"옷장",
+    "kitchen sink":"싱크대", "refrigerator":"냉장고", "tree":"나무", "bench":"벤치",
+    "car":"차량", "microwave":"전자레인지", "television":"텔레비전",
+    "bollard":"볼라드", "potted plant":"화분", "traffic cone":"콘",
+    "utility pole":"전봇대", "bicycle":"자전거", "person":"사람",
+    "laptop":"노트북", "mobile phone":"휴대폰", "stairs":"계단",
+}
 
-    height,width=frame.shape[:2]
-    left_boundary=width//3
-    right_boundary=(width*2)//3
-    now=time.time()
+DOOR_GUIDANCE = {
+    "door": "문입니다.",
+    "sliding door": "미닫이문, 옆으로.",
+    "automatic door": "자동문, 기다려.",
+    "glass door": "유리문, 손잡이 확인.",
+    "sliding glass door": "유리 미닫이문, 옆으로.",
+    "hinged door": "여닫이문, 당기거나 밀어.",
+    "swing door": "여닫이문, 방향 확인.",
+    "double door": "양개문, 손잡이 확인.",
+    "elevator door": "엘리베이터 문, 열린 뒤 타.",
+    "push bar": "푸시바, 밀어.",
+}
 
-    left_risk=0.0
-    center_risk=0.0
-    right_risk=0.0
+# 미리 녹음한 파일명. 없으면 Windows TTS로 대체한다.
+AUDIO_FILES = {
+    "stop": "stop.wav",
+    "caution_left": "caution_left.wav",
+    "caution_right": "caution_right.wav",
+    "door": "door.wav",
+    "stairs_start": "stairs_start.wav",
+    "stairs_end": "stairs_end.wav",
+    "crosswalk": "crosswalk.wav",
+    "vehicle_left": "vehicle_left.wav",
+    "vehicle_right": "vehicle_right.wav",
+    "wait": "wait.wav",
+}
 
-    results=model.track(source=frame,conf=CONF_THRESHOLD,imgsz=IMAGE_SIZE,persist=True,tracker=TRACKER,verbose=False)
-    result=results[0]
+class OptionalIMU:
+    """간단한 시리얼 IMU 어댑터.
+    IMU가 없으면 항상 정지/미사용 상태로 동작한다.
+    센서 출력 예시: ax,ay,az,gx,gy,gz\n
+    실제 IMU 모델에 맞게 parse_line()을 수정해야 한다.
+    """
+    def __init__(self, port=None, baudrate=115200):
+        self.ser = None
+        self.moving = False
+        self.turning = False
+        if port and serial:
+            try:
+                self.ser = serial.Serial(port, baudrate, timeout=0.02)
+                threading.Thread(target=self._reader, daemon=True).start()
+                print(f"IMU 연결: {port}")
+            except Exception as exc:
+                print(f"IMU 연결 실패: {exc}")
+        else:
+            print("IMU 없이 실행합니다. 카메라 기반 상태 추정만 사용합니다.")
 
-    detected_ids=set()
+    def parse_line(self, line):
+        # 장치별 포맷에 맞게 수정할 부분
+        try:
+            values = [float(x.strip()) for x in line.split(",")]
+            if len(values) >= 6:
+                ax, ay, az, gx, gy, gz = values[:6]
+                self.moving = abs(ax) + abs(ay) + abs(az - 9.8) > 2.0
+                self.turning = abs(gz) > 35.0
+        except ValueError:
+            pass
 
-    if result.boxes.id is not None:
-        masks=result.masks.data if result.masks is not None else None
+    def _reader(self):
+        while self.ser and self.ser.is_open:
+            raw = self.ser.readline().decode(errors="ignore").strip()
+            if raw:
+                self.parse_line(raw)
 
-        for index,(box,track_id) in enumerate(zip(result.boxes,result.boxes.id)):
-            x1,y1,x2,y2=map(int,box.xyxy[0].tolist())
-            cls_id=int(box.cls[0])
-            confidence=float(box.conf[0])
-            object_id=int(track_id)
-            class_name=result.names[cls_id]
-            detected_ids.add(object_id)
+class Speech:
+    """Windows SAPI를 별도 프로세스로 호출한다. pyttsx3보다 안정적으로 음성을 출력한다."""
+    def __init__(self):
+        self.jobs = queue.Queue(maxsize=1)
+        self.last_time = {}
+        threading.Thread(target=self._worker, daemon=True).start()
 
-            cx=(x1+x2)//2
-            cy=(y1+y2)//2
-            box_area=max((x2-x1)*(y2-y1),1)
-            frame_area=width*height
-            area_ratio=box_area/frame_area
+    def _worker(self):
+        while True:
+            key, text = self.jobs.get()
+            # PowerShell 기본 SAPI 음성. 한 문장씩 확실하게 출력한다.
+            safe = text.replace("'", "''")
+            command = (
+                "Add-Type -AssemblyName System.Speech; "
+                "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                "$s.Rate=1; $s.Speak('" + safe + "'); $s.Dispose()"
+            )
+            try:
+                subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+            except Exception as exc:
+                print("음성 출력 오류:", exc)
+            self.jobs.task_done()
 
-            if object_id not in track_history:
-                track_history[object_id]={"history":deque(maxlen=HISTORY_LENGTH),"last_seen":now,"last_risk":0.0,"last_zone":"CENTER","last_name":class_name,"last_box":(x1,y1,x2,y2)}
+    def say(self, key, text, force=False):
+        now = time.time()
+        if not force and now - self.last_time.get(key, 0) < SPEECH_COOLDOWN:
+            return
+        self.last_time[key] = now
+        try:
+            self.jobs.put_nowait((key, text))
+        except queue.Full:
+            try:
+                self.jobs.get_nowait(); self.jobs.task_done()
+            except queue.Empty:
+                pass
+            try:
+                self.jobs.put_nowait((key, text))
+            except queue.Full:
+                pass
 
-            state=track_history[object_id]
-            state["last_seen"]=now
-            state["last_name"]=class_name
-            state["last_box"]=(x1,y1,x2,y2)
-            state["history"].append((now,area_ratio,cx,cy))
 
-            history=state["history"]
-            old_area=area_ratio
+def label_of(result, cls_id):
+    names = result.names
+    return names[cls_id] if isinstance(names, (list, tuple)) else names.get(cls_id, "unknown")
 
-            for t,a,px,py in history:
-                if now-t>=HISTORY_SECONDS:
-                    old_area=a
-                    break
 
-            area_growth=(area_ratio-old_area)/max(old_area,0.0001)
+def zone(x1, x2, width):
+    center = (x1 + x2) / 2
+    if center < width * 0.38:
+        return "왼쪽"
+    if center > width * 0.62:
+        return "오른쪽"
+    return "정면"
 
-            if len(history)>=3 and area_growth>APPROACH_THRESHOLD:
-                movement_status="APPROACHING"
-                approach_score=min(max(area_growth*3.0,0.0),1.0)
-            elif len(history)>=3 and area_growth<-APPROACH_THRESHOLD:
-                movement_status="MOVING AWAY"
-                approach_score=0.0
+
+def in_walk_corridor(x1, x2, y2, width, height):
+    # 가로는 중앙 20%로 좁히고, 세로는 화면의 45% 아래까지 허용한다.
+    center = (x1 + x2) / 2
+    return width * 0.40 <= center <= width * 0.60 and y2 >= height * 0.45
+
+
+def expanded_box(x1, y1, x2, y2, width, height, vertical_ratio=0.18):
+    """표시 박스만 세로로 확장한다. 인식 결과 자체를 왜곡하지 않는다."""
+    box_h = y2 - y1
+    pad = int(box_h * vertical_ratio)
+    return max(0, x1), max(0, y1 - pad), min(width - 1, x2), min(height - 1, y2 + pad)
+
+
+def box_iou(a, b):
+    _, _, ax1, ay1, ax2, ay2 = a
+    _, _, bx1, by1, bx2, by2 = b
+    ix1, iy1, ix2, iy2 = max(ax1,bx1), max(ay1,by1), min(ax2,bx2), min(ay2,by2)
+    inter = max(0, ix2-ix1) * max(0, iy2-iy1)
+    if inter == 0:
+        return 0.0
+    aa = max(1, (ax2-ax1)*(ay2-ay1)); ab = max(1, (bx2-bx1)*(by2-by1))
+    return inter / (aa + ab - inter)
+
+
+def component_belongs_to_door(component, doors, width, height):
+    """손잡이는 중앙·고신뢰도·작은 물체일 때만 인정한다."""
+    label, conf, cx1, cy1, cx2, cy2 = component
+    center = (cx1 + cx2) / 2
+    area_ratio = ((cx2-cx1) * (cy2-cy1)) / max(1, width * height)
+    if conf < HANDLE_MIN_CONF or not width * 0.40 <= center <= width * 0.60 or area_ratio > 0.10:
+        return False
+    # 가까운 문은 화면 밖으로 잘려 손잡이만 보일 수 있으므로 허용한다.
+    if not doors:
+        return True
+    for door in doors:
+        _, _, x1, y1, x2, y2 = door
+        if box_iou(component, door) > 0.01 or (x1-100 <= center <= x2+100 and y1-100 <= (cy1+cy2)/2 <= y2+100):
+            return True
+    return False
+
+
+def bbox_area(det):
+    _, _, x1, y1, x2, y2 = det
+    return max(1, (x2 - x1) * (y2 - y1))
+
+class SituationMachine:
+    def __init__(self):
+        self.state = "WALK"
+        self.forced = False
+        self.candidate = None
+        self.count = 0
+        self.prev_frame = None
+        self.stair_seen = False
+
+    def set_forced(self, state):
+        self.state = state
+        self.forced = True
+
+    def auto(self):
+        self.forced = False
+
+    def update(self, detections):
+        labels = {d[0] for d in detections}
+        if self.forced:
+            return self.state
+        if labels & CROSSWALK_LABELS:
+            candidate = "CROSSWALK"
+        elif labels & STAIR_LABELS:
+            candidate = "STAIRS"
+        elif labels & DOOR_LABELS:
+            candidate = "DOOR"
+        else:
+            candidate = "WALK"
+        if candidate == self.candidate:
+            self.count += 1
+        else:
+            self.candidate, self.count = candidate, 1
+        if self.count >= STATE_CONFIRM_FRAMES:
+            self.state = candidate
+        return self.state
+
+    def door_motion(self, frame, door_det):
+        """문 영역의 연속 프레임 변화량. 자동문 개폐를 확정하지 않고 변화만 감지."""
+        if not door_det:
+            self.prev_frame = None
+            return 0.0
+        _, _, x1, y1, x2, y2 = door_det
+        crop = frame[max(0,y1):y2, max(0,x1):x2]
+        if crop.size == 0:
+            return 0.0
+        gray = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), (160, 120))
+        if self.prev_frame is None:
+            self.prev_frame = gray
+            return 0.0
+        diff = float(np.mean(cv2.absdiff(self.prev_frame, gray)))
+        self.prev_frame = gray
+        return diff
+
+
+def main():
+    print("YOLOE 모델 로딩 중...")
+    model = YOLOE(MODEL_PATH)
+    model.set_classes(PROMPTS)
+    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    if not cap.isOpened():
+        raise RuntimeError("웹캠을 열 수 없습니다.")
+
+    imu = OptionalIMU(IMU_PORT, IMU_BAUDRATE)
+    speech = Speech()
+    machine = SituationMachine()
+    danger_candidate = None
+    danger_count = 0
+    track_history = {}
+    last_stair_state = None
+
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        h, w = frame.shape[:2]
+        result = model.predict(frame, conf=CONFIDENCE, verbose=False)[0]
+        all_dets = []
+        for box in result.boxes:
+            cls_id = int(box.cls[0])
+            conf = float(box.conf[0])
+            label = label_of(result, cls_id)
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            all_dets.append((label, conf, x1, y1, x2, y2))
+
+        # 인식은 항상 전체 PROMPTS 대상으로 유지한다.
+        # 상태별 active는 '안내에 사용할 후보'만 고르는 용도다.
+        # 문 안내 범위 밖의 문은 인식하되 안내 후보에서는 제외한다.
+        # 냉장고·옷장·창문이 문으로 바뀌는 경우를 문 후보에서 제거한다.
+        solid_objects = [d for d in all_dets if d[0] in {"refrigerator", "wardrobe", "window", "garage door"}
+                         and in_walk_corridor(d[2], d[4], d[5], w, h)]
+        raw_doors = [d for d in all_dets if d[0] in DOOR_LABELS
+                     and d[1] >= SPECIAL_MIN_CONF
+                     and in_walk_corridor(d[2], d[4], d[5], w, h)]
+        doors = [d for d in raw_doors if not any(box_iou(d, obj) > 0.25 for obj in solid_objects if obj[0] != "garage door")]
+        components = []
+        valid_components = [d for d in components if component_belongs_to_door(d, doors, w, h)]
+        # 중앙의 유효한 문/손잡이만 상태 전환에 사용한다.
+        # 냉장고와 함께 잘못 검출된 문 라벨은 상태 전환에서도 제외한다.
+        rejected_doors = [d for d in raw_doors if d not in doors]
+        context_dets = [d for d in all_dets
+                        if (in_walk_corridor(d[2], d[4], d[5], w, h) and d not in rejected_doors)
+                        or d[0] in CROSSWALK_LABELS]
+        # 가까운 문이 화면 밖으로 잘려 손잡이만 보이는 경우도 문 상태로 전환한다.
+        context_dets.extend(valid_components)
+        state = machine.update(context_dets)
+        if state == "WALK":
+            active = [d for d in all_dets if d[0] not in DOOR_LABELS | DOOR_COMPONENT_LABELS | STAIR_LABELS | CROSSWALK_LABELS
+                      and in_walk_corridor(d[2], d[4], d[5], w, h)]
+        elif state == "DOOR":
+            # 부속품만 검출된 경우에는 문 안내를 하지 않는다.
+            active = doors + valid_components
+        elif state == "STAIRS":
+            active = [d for d in all_dets if d[0] in STAIR_LABELS and d[1] >= SPECIAL_MIN_CONF]
+        else:
+            active = all_dets
+
+        active.sort(key=lambda d: abs(((d[2] + d[4]) / 2) - w / 2))
+        primary = active[0] if active else None
+
+        # 상태별 서브모듈
+        if state == "WALK" and primary:
+            label, _, x1, y1, x2, y2 = primary
+            pos = zone(x1, x2, w)
+            key = f"walk_{label}_{pos}"
+            ko = KOREAN_LABELS.get(label, label)
+            if label == "car":
+                speech.say(key, f"{pos} 차량, 멈추세요.")
             else:
-                movement_status="STABLE"
-                approach_score=0.0
-
-            # Segmentation Mask의 가장 아래쪽 위치
-            mask_bottom_ratio=cy/height
-
-            if masks is not None and index<len(masks):
-                mask=masks[index].cpu().numpy()
-                mask=cv2.resize(mask,(width,height),interpolation=cv2.INTER_NEAREST)
-                binary_mask=(mask>0.5).astype("uint8")
-
-                if cv2.countNonZero(binary_mask)>0:
-                    points=cv2.findNonZero(binary_mask)
-                    mask_bottom=int(points[:,:,1].max())
-                    mask_bottom_ratio=mask_bottom/height
-
-                    overlay=frame.copy()
-                    overlay[binary_mask>0]=(0,255,0)
-                    frame=cv2.addWeighted(frame,0.85,overlay,0.15,0)
-
-            # 가까운 물체일수록 급격히 증가하는 비선형 위험도
-            proximity=max(0.0,(mask_bottom_ratio-0.35)/0.65)
-            proximity_risk=proximity**1.8
-
-            # Bounding Box 크기 위험도
-            size_risk=min(area_ratio*8.0,1.0)
-
-            # 화면 아래쪽 위치 위험도
-            position_risk=max(0.0,(mask_bottom_ratio-0.40)/0.60)
-            position_risk=min(position_risk,1.0)
-
-            # 좌우 방향
-            if cx<left_boundary:
-                zone="LEFT"
-                zone_center=width/6
-            elif cx<right_boundary:
-                zone="CENTER"
-                zone_center=width/2
-            else:
-                zone="RIGHT"
-                zone_center=width*5/6
-
-            # 중앙 보행 경로와의 겹침
-            horizontal_distance=abs(cx-width/2)/(width/2)
-            path_overlap=max(0.0,1.0-horizontal_distance)
-            path_overlap=path_overlap**0.7
-
-            # 화면 아래쪽에 있고 중앙에 가까울수록 충돌 위험 증가
-            collision_risk=(proximity_risk*0.30)+(size_risk*0.15)+(position_risk*0.15)+(path_overlap*0.25)+(approach_score*0.15)
-            collision_risk=min(max(collision_risk,0.0),1.0)
-
-            state["last_risk"]=collision_risk
-            state["last_zone"]=zone
-
-            if zone=="LEFT":
-                left_risk=max(left_risk,collision_risk)
-            elif zone=="CENTER":
-                center_risk=max(center_risk,collision_risk)
-            else:
-                right_risk=max(right_risk,collision_risk)
-
-            cv2.rectangle(frame,(x1,y1),(x2,y2),(0,255,0),2)
-            label=f"ID:{object_id} {class_name} {confidence:.2f} R:{collision_risk:.2f}"
-            cv2.putText(frame,label,(x1,max(y1-10,20)),cv2.FONT_HERSHEY_SIMPLEX,0.45,(0,255,0),2)
-            cv2.putText(frame,movement_status,(x1,min(y2+20,height-10)),cv2.FONT_HERSHEY_SIMPLEX,0.45,(0,255,255),2)
-
-    # 검출이 잠시 사라진 객체의 위험도 유지
-    for object_id,state in list(track_history.items()):
-        if object_id not in detected_ids:
-            lost_time=now-state["last_seen"]
-
-            if lost_time<LOST_TIMEOUT:
-                zone=state["last_zone"]
-                decay=max(0.0,1.0-(lost_time/LOST_TIMEOUT))
-                retained_risk=state["last_risk"]*decay
-
-                if zone=="LEFT":
-                    left_risk=max(left_risk,retained_risk)
-                elif zone=="CENTER":
-                    center_risk=max(center_risk,retained_risk)
+                # 일반 사물도 3프레임 연속 확인 후 음성 안내한다.
+                if danger_candidate == key:
+                    danger_count += 1
                 else:
-                    right_risk=max(right_risk,retained_risk)
+                    danger_candidate, danger_count = key, 1
+                if danger_count >= DANGER_CONFIRM_FRAMES:
+                    if pos == "정면":
+                        speech.say("stop_" + key, f"정면 {ko}, 멈춰.")
+                    else:
+                        speech.say(key, f"{pos} {ko}.")
 
-            elif lost_time>2.0:
-                del track_history[object_id]
+        elif state == "DOOR" and primary:
+            label, conf, x1, y1, x2, y2 = primary
+            if label in DOOR_LABELS:
+                # 회전문 프롬프트는 제거했다. 유리 미닫이문은 별도 유형으로만 제한한다.
+                if label == "sliding glass door":
+                    spoken_label = "sliding door" if conf >= 0.58 else "door"
+                elif label == "sliding door" and conf < 0.58:
+                    spoken_label = "door"
+                else:
+                    spoken_label = label
+                text = DOOR_GUIDANCE.get(spoken_label, "문.")
+                speech.say("door_" + spoken_label, text)
+                # 손잡이는 높은 신뢰도 + 실제 문과의 근접 조건을 통과한 경우에만 안내한다.
+                for handle in valid_components:
+                    hpos = zone(handle[2], handle[4], w)
+                    speech.say("handle_" + handle[0],
+                               f"{hpos} 손잡이, 당기거나 밀어.")
+                change = machine.door_motion(frame, primary)
+                if change > 18:
+                    speech.say("door_motion", "문 움직임.")
 
-    # 위험도 시간 안정화
-    risk_history["LEFT"].append(left_risk)
-    risk_history["CENTER"].append(center_risk)
-    risk_history["RIGHT"].append(right_risk)
+        elif state == "STAIRS" and primary:
+            # 시작/끝을 완전 확정하지 않고 상태 변화로 안내
+            label, _, x1, y1, x2, y2 = primary
+            stair_state = "접근"
+            if y2 < h * 0.70:
+                stair_state = "끝 가능성"
+            if stair_state != last_stair_state:
+                if stair_state == "접근":
+                    speech.say("stairs_start", "계단 시작, 천천히.")
+                else:
+                    speech.say("stairs_end", "계단 끝, 평지 확인.")
+                last_stair_state = stair_state
 
-    left_s=sum(risk_history["LEFT"])/len(risk_history["LEFT"])
-    center_s=sum(risk_history["CENTER"])/len(risk_history["CENTER"])
-    right_s=sum(risk_history["RIGHT"])/len(risk_history["RIGHT"])
+        elif state == "CROSSWALK":
+            speech.say("crosswalk", "횡단보도, 멈춰.")
+            vehicles = [d for d in all_dets if d[0] in VEHICLE_LABELS]
+            for car in vehicles:
+                label, _, x1, y1, x2, y2 = car
+                pos = zone(x1, x2, w)
+                center = ((x1+x2)/2, (y1+y2)/2)
+                key = f"car_{pos}"
+                previous = track_history.get(key)
+                current_area = bbox_area(car)
+                approaching = previous is not None and current_area > previous * 1.10
+                track_history[key] = current_area
+                if approaching:
+                    if pos == "왼쪽":
+                        speech.say("vehicle_left", "왼쪽 차량, 기다려.")
+                    elif pos == "오른쪽":
+                        speech.say("vehicle_right", "오른쪽 차량, 기다려.")
+                    else:
+                        speech.say("wait", "차량 접근, 기다려.")
 
-    # 안전 방향 판단
-    safe_left=left_s<RISK_THRESHOLD
-    safe_center=center_s<RISK_THRESHOLD
-    safe_right=right_s<RISK_THRESHOLD
+        # 화면에는 항상 전체 인식 결과를 표시한다.
+        # active는 안내용 후보일 뿐이며, 상태가 바뀌어도 다른 물체 인식을 끄지 않는다.
+        cv2.rectangle(frame, (int(w*.40), int(h*.20)), (int(w*.60), h), (0,180,255), 2)
+        for d in all_dets:
+            label, conf, x1, y1, x2, y2 = d
+            dx1, dy1, dx2, dy2 = expanded_box(x1, y1, x2, y2, w, h)
+            if label in DOOR_LABELS:
+                color = (0, 180, 255)
+            elif label in DOOR_COMPONENT_LABELS:
+                color = (255, 180, 0)
+            elif label in STAIR_LABELS | CROSSWALK_LABELS:
+                color = (180, 0, 255)
+            else:
+                color = (0, 0, 255) if d in active else (100, 180, 100)
+            cv2.rectangle(frame, (dx1,dy1), (dx2,dy2), color, 2)
+            cv2.putText(frame, f"{label} {conf:.2f}", (dx1,max(25,dy1-8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, .55, color, 2)
+        imu_text = f"IMU moving={imu.moving} turning={imu.turning}"
+        cv2.putText(frame, f"STATE: {state} | A:auto 1:walk 2:door 3:stairs 4:crosswalk Q:quit",
+                    (15, 30), cv2.FONT_HERSHEY_SIMPLEX, .58, (255,255,255), 2)
+        cv2.putText(frame, imu_text, (15, 58), cv2.FONT_HERSHEY_SIMPLEX, .55, (255,255,255), 2)
+        cv2.imshow("YOLOE Situation-based Walking Assistant", frame)
 
-    if safe_center:
-        direction="FORWARD"
-    elif safe_left and safe_right:
-        direction="LEFT" if left_s<=right_s else "RIGHT"
-    elif safe_left:
-        direction="LEFT"
-    elif safe_right:
-        direction="RIGHT"
-    else:
-        direction="STOP"
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            break
+        if key == ord("a"):
+            machine.auto()
+        elif key == ord("1"):
+            machine.set_forced("WALK")
+        elif key == ord("2"):
+            machine.set_forced("DOOR")
+        elif key == ord("3"):
+            machine.set_forced("STAIRS")
+        elif key == ord("4"):
+            machine.set_forced("CROSSWALK")
 
-    # 화면 표시
-    cv2.line(frame,(left_boundary,0),(left_boundary,height),(255,255,255),1)
-    cv2.line(frame,(right_boundary,0),(right_boundary,height),(255,255,255),1)
+    cap.release()
+    cv2.destroyAllWindows()
 
-    cv2.putText(frame,f"LEFT: {left_s:.2f}",(10,40),cv2.FONT_HERSHEY_SIMPLEX,0.6,(0,255,0),2)
-    cv2.putText(frame,f"CENTER: {center_s:.2f}",(10,70),cv2.FONT_HERSHEY_SIMPLEX,0.6,(0,255,255),2)
-    cv2.putText(frame,f"RIGHT: {right_s:.2f}",(10,100),cv2.FONT_HERSHEY_SIMPLEX,0.6,(0,255,0),2)
-    cv2.putText(frame,f"DIRECTION: {direction}",(10,145),cv2.FONT_HERSHEY_SIMPLEX,0.8,(0,0,255),2)
 
-    current_time=time.time()
-    fps=1.0/max(current_time-prev_time,0.001)
-    prev_time=current_time
-
-    cv2.putText(frame,f"FPS: {fps:.1f}",(10,180),cv2.FONT_HERSHEY_SIMPLEX,0.6,(255,255,0),2)
-
-    cv2.imshow("YOLOE Navigation",frame)
-
-    if cv2.waitKey(1)&0xFF==ord("q"):
-        break
-
-cap.release()
-cv2.destroyAllWindows()
-print("Program terminated.")
+if __name__ == "__main__":
+    main()
