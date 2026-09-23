@@ -41,15 +41,15 @@ except ImportError:
     serial = None
 
 MODEL_PATH = "yoloe-26n-seg.pt"
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
 IMU_PORT = None       # 예: "COM5". 없으면 None
 IMU_BAUDRATE = 115200
 CONFIDENCE = 0.35
-STATE_CONFIRM_FRAMES = 12
+STATE_CONFIRM_FRAMES = 4
 DANGER_CONFIRM_FRAMES = 2
-SPEECH_COOLDOWN = 0.8
-SPECIAL_MIN_CONF = 0.78
-ELEVATOR_MIN_CONF = 0.90
+SPEECH_COOLDOWN = 0.35
+SPECIAL_MIN_CONF = 0.75
+ELEVATOR_MIN_CONF = 0.95
 AUDIO_DIR = "audio"   # wav 파일이 있으면 TTS보다 우선 사용
 
 # YOLOE open-vocabulary prompts
@@ -63,7 +63,7 @@ PROMPTS = [
     "door", "open door", "closed door", "sliding door", "automatic door",
     "glass door", "sliding glass door", "hinged door", "swing door", "double door",
     "folding door", "screen door", "garage door",
-    "emergency exit door",
+    "emergency exit door", "door handle", "doorknob", "push bar",
     "stairs", "staircase", "stair landing", "crosswalk", "zebra crossing",
     "elevator door",
 ]
@@ -74,9 +74,9 @@ DOOR_LABELS = {
     "folding door", "screen door", "garage door",
     "emergency exit door",
 }
-DOOR_COMPONENT_LABELS = set()
-HANDLE_LABELS = set()
-HANDLE_MIN_CONF = 0.92
+DOOR_COMPONENT_LABELS = {"door handle", "doorknob", "push bar"}
+HANDLE_LABELS = {"door handle", "doorknob"}
+HANDLE_MIN_CONF = 0.88
 DOOR_TYPE_LABELS = DOOR_LABELS - {"door", "open door", "closed door"}
 STAIR_LABELS = {"stairs", "staircase", "stair landing"}
 CROSSWALK_LABELS = {"crosswalk", "zebra crossing"}
@@ -93,16 +93,16 @@ KOREAN_LABELS = {
 }
 
 DOOR_GUIDANCE = {
-    "door": "문입니다.",
-    "sliding door": "미닫이문, 옆으로.",
-    "automatic door": "자동문, 기다려.",
-    "glass door": "유리문, 손잡이 확인.",
-    "sliding glass door": "유리 미닫이문, 옆으로.",
-    "hinged door": "여닫이문, 당기거나 밀어.",
-    "swing door": "여닫이문, 방향 확인.",
-    "double door": "양개문, 손잡이 확인.",
-    "elevator door": "엘리베이터 문, 열린 뒤 타.",
-    "push bar": "푸시바, 밀어.",
+    "door": "문이 있습니다. 당기거나 미세요.",
+    "sliding door": "미닫이문이 있습니다. 옆으로 여세요.",
+    "automatic door": "자동문이 있습니다. 잠시 기다리세요.",
+    "glass door": "유리문이 있습니다. 손잡이를 확인하세요.",
+    "sliding glass door": "유리 미닫이문이 있습니다. 옆으로 여세요.",
+    "hinged door": "여닫이문이 있습니다. 당기거나 미세요.",
+    "swing door": "여닫이문이 있습니다. 여는 방향을 확인하세요.",
+    "double door": "양개문이 있습니다. 손잡이를 확인하세요.",
+    "elevator door": "엘리베이터 문이 있습니다. 열리면 타세요.",
+    "push bar": "푸시바가 있습니다. 앞으로 미세요.",
 }
 
 # 미리 녹음한 파일명. 없으면 Windows TTS로 대체한다.
@@ -157,45 +157,70 @@ class OptionalIMU:
                 self.parse_line(raw)
 
 class Speech:
-    """Windows SAPI를 별도 프로세스로 호출한다. pyttsx3보다 안정적으로 음성을 출력한다."""
+    """새 안내가 나오면 이전 안내를 중단하고 최신 안내로 전환한다."""
     def __init__(self):
         self.jobs = queue.Queue(maxsize=1)
+        self.pending = set()
         self.last_time = {}
+        self.proc = None
+        self.lock = threading.Lock()
         threading.Thread(target=self._worker, daemon=True).start()
 
     def _worker(self):
         while True:
             key, text = self.jobs.get()
-            # PowerShell 기본 SAPI 음성. 한 문장씩 확실하게 출력한다.
-            safe = text.replace("'", "''")
-            command = (
-                "Add-Type -AssemblyName System.Speech; "
-                "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                "$s.Rate=1; $s.Speak('" + safe + "'); $s.Dispose()"
-            )
             try:
-                subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
-            except Exception as exc:
-                print("음성 출력 오류:", exc)
-            self.jobs.task_done()
+                safe = text.replace("'", "''")
+                command = (
+                    "Add-Type -AssemblyName System.Speech; "
+                    "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                    "$s.Volume=100; $s.Rate=1; $s.Speak('" + safe + "'); $s.Dispose()"
+                )
+                with self.lock:
+                    self.proc = subprocess.Popen(
+                        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                    proc = self.proc
+                proc.wait(timeout=8)
+            except Exception:
+                with self.lock:
+                    if self.proc and self.proc.poll() is None:
+                        self.proc.kill()
+            finally:
+                with self.lock:
+                    self.pending.discard(key)
+                    self.proc = None
+                self.jobs.task_done()
 
     def say(self, key, text, force=False):
         now = time.time()
-        if not force and now - self.last_time.get(key, 0) < SPEECH_COOLDOWN:
-            return
-        self.last_time[key] = now
-        try:
-            self.jobs.put_nowait((key, text))
-        except queue.Full:
-            try:
-                self.jobs.get_nowait(); self.jobs.task_done()
-            except queue.Empty:
-                pass
+        with self.lock:
+            # 같은 대상은 현재 말하는 중이면 다시 끊지 않는다.
+            if key in self.pending:
+                return
+            if not force and now - self.last_time.get(key, 0.0) < SPEECH_COOLDOWN:
+                return
+            self.last_time[key] = now
+            # 현재 문장을 즉시 중단한다.
+            if self.proc and self.proc.poll() is None:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+            # 대기 중인 이전 문장 제거
+            while True:
+                try:
+                    old_key, _ = self.jobs.get_nowait()
+                    self.pending.discard(old_key)
+                    self.jobs.task_done()
+                except queue.Empty:
+                    break
+            self.pending.add(key)
             try:
                 self.jobs.put_nowait((key, text))
             except queue.Full:
-                pass
+                self.pending.discard(key)
 
 
 def label_of(result, cls_id):
@@ -212,10 +237,34 @@ def zone(x1, x2, width):
     return "정면"
 
 
-def in_walk_corridor(x1, x2, y2, width, height):
-    # 가로는 중앙 20%로 좁히고, 세로는 화면의 45% 아래까지 허용한다.
-    center = (x1 + x2) / 2
-    return width * 0.40 <= center <= width * 0.60 and y2 >= height * 0.45
+def roi(width, height):
+    # 기존보다 가로를 조금 넓히고, 세로는 더 길게 잡는다.
+    return int(width * 0.37), int(height * 0.12), int(width * 0.63), height
+
+
+def in_walk_corridor(x1, x2, y1, y2, width, height):
+    rx1, ry1, rx2, ry2 = roi(width, height)
+    # 일반 사물도 ROI와 겹치면 안내한다. ROI보다 큰 박스도 포함한다.
+    return not (x2 < rx1 or x1 > rx2 or y2 < ry1 or y1 > ry2)
+
+
+def intersects_special_roi(x1, y1, x2, y2, width, height):
+    rx1, ry1, rx2, ry2 = roi(width, height)
+    return not (x2 < rx1 or x1 > rx2 or y2 < ry1 or y1 > ry2)
+
+
+def special_is_near(x1, y1, x2, y2, width, height):
+    """특수 상황은 멀리서 ROI 안에 작게 들어온 경우를 제외한다.
+    ROI 경계를 넘거나, ROI와 비슷한 크기 이상일 때만 통과한다.
+    """
+    if not intersects_special_roi(x1, y1, x2, y2, width, height):
+        return False
+    rx1, ry1, rx2, ry2 = roi(width, height)
+    fully_inside = x1 >= rx1 and y1 >= ry1 and x2 <= rx2 and y2 <= ry2
+    box_area = max(1, (x2 - x1) * (y2 - y1))
+    roi_area = max(1, (rx2 - rx1) * (ry2 - ry1))
+    # 경계를 살짝이라도 넘거나 ROI의 약 45% 이상을 차지하면 가까운 것으로 본다.
+    return (not fully_inside) or (box_area / roi_area >= 0.45)
 
 
 def expanded_box(x1, y1, x2, y2, width, height, vertical_ratio=0.18):
@@ -245,12 +294,26 @@ def component_belongs_to_door(component, doors, width, height):
         return False
     # 가까운 문은 화면 밖으로 잘려 손잡이만 보일 수 있으므로 허용한다.
     if not doors:
-        return True
+        # 문이 잘린 근거리 상황은 매우 높은 확신일 때만 허용한다.
+        return conf >= 0.96
     for door in doors:
         _, _, x1, y1, x2, y2 = door
         if box_iou(component, door) > 0.01 or (x1-100 <= center <= x2+100 and y1-100 <= (cy1+cy2)/2 <= y2+100):
             return True
     return False
+
+
+def korean_particle(word):
+    """받침에 따라 이/가를 선택한다."""
+    if not word:
+        return "이"
+    code = ord(word[-1])
+    return "이" if 0xAC00 <= code <= 0xD7A3 and (code - 0xAC00) % 28 != 0 else "가"
+
+
+def natural_object_sentence(position, label):
+    ko = KOREAN_LABELS.get(label, label)
+    return f"{position}에 {ko}{korean_particle(ko)} 있습니다."
 
 
 def bbox_area(det):
@@ -275,6 +338,8 @@ class SituationMachine:
 
     def update(self, detections):
         labels = {d[0] for d in detections}
+        if any(d[0] in DOOR_COMPONENT_LABELS for d in detections):
+            labels.add("door")
         if self.forced:
             return self.state
         if labels & CROSSWALK_LABELS:
@@ -289,7 +354,10 @@ class SituationMachine:
             self.count += 1
         else:
             self.candidate, self.count = candidate, 1
-        if self.count >= STATE_CONFIRM_FRAMES:
+        # 특수 상황이 사라지면 이전 문/계단 상태를 즉시 종료한다.
+        if candidate == "WALK":
+            self.state = "WALK"
+        elif self.count >= STATE_CONFIRM_FRAMES:
             self.state = candidate
         return self.state
 
@@ -348,59 +416,62 @@ def main():
         # 문 안내 범위 밖의 문은 인식하되 안내 후보에서는 제외한다.
         # 냉장고·옷장·창문이 문으로 바뀌는 경우를 문 후보에서 제거한다.
         solid_objects = [d for d in all_dets if d[0] in {"refrigerator", "wardrobe", "window", "garage door"}
-                         and in_walk_corridor(d[2], d[4], d[5], w, h)]
+                         and in_walk_corridor(d[2], d[4], d[3], d[5], w, h)]
         raw_doors = [d for d in all_dets if d[0] in DOOR_LABELS
-                     and d[1] >= SPECIAL_MIN_CONF
-                     and in_walk_corridor(d[2], d[4], d[5], w, h)]
+                     and d[1] >= (ELEVATOR_MIN_CONF if d[0] == "elevator door" else SPECIAL_MIN_CONF)
+                     and special_is_near(d[2], d[3], d[4], d[5], w, h)]
         doors = [d for d in raw_doors if not any(box_iou(d, obj) > 0.25 for obj in solid_objects if obj[0] != "garage door")]
-        components = []
+        components = [d for d in all_dets if d[0] in DOOR_COMPONENT_LABELS and d[1] >= HANDLE_MIN_CONF]
         valid_components = [d for d in components if component_belongs_to_door(d, doors, w, h)]
         # 중앙의 유효한 문/손잡이만 상태 전환에 사용한다.
         # 냉장고와 함께 잘못 검출된 문 라벨은 상태 전환에서도 제외한다.
         rejected_doors = [d for d in raw_doors if d not in doors]
         context_dets = [d for d in all_dets
-                        if (in_walk_corridor(d[2], d[4], d[5], w, h) and d not in rejected_doors)
-                        or d[0] in CROSSWALK_LABELS]
+                        if ((d[0] in DOOR_LABELS | STAIR_LABELS | CROSSWALK_LABELS
+                             and special_is_near(d[2], d[3], d[4], d[5], w, h))
+                            or (d[0] not in DOOR_LABELS | STAIR_LABELS | CROSSWALK_LABELS
+                                and in_walk_corridor(d[2], d[4], d[3], d[5], w, h)))
+                        and d not in rejected_doors]
         # 가까운 문이 화면 밖으로 잘려 손잡이만 보이는 경우도 문 상태로 전환한다.
         context_dets.extend(valid_components)
         state = machine.update(context_dets)
         if state == "WALK":
             active = [d for d in all_dets if d[0] not in DOOR_LABELS | DOOR_COMPONENT_LABELS | STAIR_LABELS | CROSSWALK_LABELS
-                      and in_walk_corridor(d[2], d[4], d[5], w, h)]
+                      and in_walk_corridor(d[2], d[4], d[3], d[5], w, h)]
         elif state == "DOOR":
             # 부속품만 검출된 경우에는 문 안내를 하지 않는다.
             active = doors + valid_components
         elif state == "STAIRS":
-            active = [d for d in all_dets if d[0] in STAIR_LABELS and d[1] >= SPECIAL_MIN_CONF]
+            active = [d for d in all_dets if d[0] in STAIR_LABELS and d[1] >= SPECIAL_MIN_CONF and special_is_near(d[2], d[3], d[4], d[5], w, h)]
         else:
-            active = all_dets
+            active = [d for d in all_dets
+                      if d[0] in CROSSWALK_LABELS
+                      and special_is_near(d[2], d[3], d[4], d[5], w, h)]
 
         active.sort(key=lambda d: abs(((d[2] + d[4]) / 2) - w / 2))
         primary = active[0] if active else None
+        # 대상이 바뀌거나 사라지면 이전 대상의 연속 카운트를 즉시 초기화한다.
+        current_key = f"{primary[0]}_{zone(primary[2], primary[4], w)}" if primary else None
+        if current_key != danger_candidate:
+            danger_candidate = current_key
+            danger_count = 1 if current_key else 0
 
         # 상태별 서브모듈
         if state == "WALK" and primary:
+            # 일반 사물은 현재 가장 중요한 대상 하나만 짧게 안내한다.
             label, _, x1, y1, x2, y2 = primary
-            pos = zone(x1, x2, w)
-            key = f"walk_{label}_{pos}"
-            ko = KOREAN_LABELS.get(label, label)
-            if label == "car":
-                speech.say(key, f"{pos} 차량, 멈추세요.")
-            else:
-                # 일반 사물도 3프레임 연속 확인 후 음성 안내한다.
-                if danger_candidate == key:
-                    danger_count += 1
-                else:
-                    danger_candidate, danger_count = key, 1
-                if danger_count >= DANGER_CONFIRM_FRAMES:
-                    if pos == "정면":
-                        speech.say("stop_" + key, f"정면 {ko}, 멈춰.")
-                    else:
-                        speech.say(key, f"{pos} {ko}.")
+            if label != "car":
+                pos = zone(x1, x2, w)
+                ko = KOREAN_LABELS.get(label, label)
+                speech.say(f"walk_{label}_{pos}", f"{pos} {ko}")
 
         elif state == "DOOR" and primary:
             label, conf, x1, y1, x2, y2 = primary
-            if label in DOOR_LABELS:
+            if label in HANDLE_LABELS and label in {d[0] for d in valid_components}:
+                speech.say("handle_" + label, f"{zone(x1, x2, w)} 손잡이, 당기거나 미세요.")
+            elif label == "push bar" and label in {d[0] for d in valid_components}:
+                speech.say("push_bar", "푸시바입니다. 앞으로 미세요.")
+            elif label in DOOR_LABELS:
                 # 회전문 프롬프트는 제거했다. 유리 미닫이문은 별도 유형으로만 제한한다.
                 if label == "sliding glass door":
                     spoken_label = "sliding door" if conf >= 0.58 else "door"
@@ -408,16 +479,8 @@ def main():
                     spoken_label = "door"
                 else:
                     spoken_label = label
-                text = DOOR_GUIDANCE.get(spoken_label, "문.")
-                speech.say("door_" + spoken_label, text)
-                # 손잡이는 높은 신뢰도 + 실제 문과의 근접 조건을 통과한 경우에만 안내한다.
-                for handle in valid_components:
-                    hpos = zone(handle[2], handle[4], w)
-                    speech.say("handle_" + handle[0],
-                               f"{hpos} 손잡이, 당기거나 밀어.")
-                change = machine.door_motion(frame, primary)
-                if change > 18:
-                    speech.say("door_motion", "문 움직임.")
+                text = DOOR_GUIDANCE.get(spoken_label, "문이 있습니다. 여는 방법을 확인하세요.")
+                speech.say("door_" + spoken_label, f"{zone(x1, x2, w)}에 {text}")
 
         elif state == "STAIRS" and primary:
             # 시작/끝을 완전 확정하지 않고 상태 변화로 안내
@@ -427,13 +490,13 @@ def main():
                 stair_state = "끝 가능성"
             if stair_state != last_stair_state:
                 if stair_state == "접근":
-                    speech.say("stairs_start", "계단 시작, 천천히.")
+                    speech.say("stairs_start", "계단 시작입니다. 천천히 가세요.")
                 else:
-                    speech.say("stairs_end", "계단 끝, 평지 확인.")
+                    speech.say("stairs_end", "계단 끝입니다. 평지를 확인하세요.")
                 last_stair_state = stair_state
 
         elif state == "CROSSWALK":
-            speech.say("crosswalk", "횡단보도, 멈춰.")
+            speech.say("crosswalk", "횡단보도입니다. 멈추세요.")
             vehicles = [d for d in all_dets if d[0] in VEHICLE_LABELS]
             for car in vehicles:
                 label, _, x1, y1, x2, y2 = car
@@ -446,15 +509,16 @@ def main():
                 track_history[key] = current_area
                 if approaching:
                     if pos == "왼쪽":
-                        speech.say("vehicle_left", "왼쪽 차량, 기다려.")
+                        speech.say("vehicle_left", "왼쪽에 차량이 있습니다. 기다리세요.")
                     elif pos == "오른쪽":
-                        speech.say("vehicle_right", "오른쪽 차량, 기다려.")
+                        speech.say("vehicle_right", "오른쪽에 차량이 있습니다. 기다리세요.")
                     else:
-                        speech.say("wait", "차량 접근, 기다려.")
+                        speech.say("wait", "차량이 접근합니다. 기다리세요.")
 
         # 화면에는 항상 전체 인식 결과를 표시한다.
         # active는 안내용 후보일 뿐이며, 상태가 바뀌어도 다른 물체 인식을 끄지 않는다.
-        cv2.rectangle(frame, (int(w*.40), int(h*.20)), (int(w*.60), h), (0,180,255), 2)
+        rx1, ry1, rx2, ry2 = roi(w, h)
+        cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0,180,255), 2)
         for d in all_dets:
             label, conf, x1, y1, x2, y2 = d
             dx1, dy1, dx2, dy2 = expanded_box(x1, y1, x2, y2, w, h)
