@@ -111,8 +111,11 @@ CLASS_MIN_CONF = {
     "open doorway": 0.30,
     "door frame": 0.35,
     "sliding door": 0.35,
-    "glass sliding door": 0.55,
-    "sliding glass door": 0.55,
+    "glass sliding door": 0.38,
+    "sliding glass door": 0.34,
+    "front view of a glass sliding door": 0.30,
+    "front-facing sliding glass entrance door": 0.30,
+    "sliding glass door handle": 0.52,
     "automatic door": 0.60,
     "glass door": 0.60,
     "hinged door": 0.50,
@@ -121,12 +124,17 @@ CLASS_MIN_CONF = {
     "do not lean on elevator door sticker": ELEVATOR_STICKER_MIN_CONF,
     "fall hazard sticker on elevator door": ELEVATOR_STICKER_MIN_CONF,
     "elevator safety notice": ELEVATOR_STICKER_MIN_CONF,
-    "doorknob": 0.68,
-    "lever handle": 0.64,
-    "pull handle": 0.64,
+    "doorknob": 0.62,
+    "door knob": 0.62,
+    "door handle": 0.56,
+    "lever handle": 0.56,
+    "lever door handle": 0.56,
+    "pull handle": 0.56,
+    "pull door handle": 0.56,
+    "sliding glass door handle": 0.52,
     "push bar": 0.68,
     "door push button": 0.70,
-    "recessed door handle": 0.64,
+    "recessed door handle": 0.56,
 }
 
 AUDIO_DIR = "audio"
@@ -136,13 +144,16 @@ PROMPTS = [
     "wardrobe", "closet", "refrigerator", "tree", "bench",
     "passenger car driving on a road, viewed from a distance",
     "electric kick scooter on a road",
-    "bollard", "potted plant", "traffic cone",
+    "bollard", "traffic cone",
     "utility pole", "bicycle", "person", "curb", "railing", "guardrail",
     "door", "doorway", "entrance door", "room door", "open doorway",
-    "door frame", "sliding door", "automatic door", "glass door", "hinged door",
+    "door frame", "sliding door", "glass sliding door", "sliding glass door",
+    "front view of a glass sliding door",
+    "front-facing sliding glass entrance door",
+    "automatic door", "glass door", "hinged door",
     "doorknob", "door knob", "door handle", "lever handle",
     "lever door handle", "pull handle", "pull door handle",
-    "push bar", "door push button", "recessed door handle",
+    "sliding glass door handle", "push bar", "door push button", "recessed door handle",
     "stairs", "staircase", "stair landing",
     "elevator",
     "elevator safety warning sticker",
@@ -154,12 +165,16 @@ PROMPTS = [
 
 DOOR_LABELS = {
     "door", "doorway", "entrance door", "room door", "open doorway", "door frame",
-    "sliding door", "automatic door", "glass door", "hinged door",
+    "sliding door", "glass sliding door", "sliding glass door",
+    "front view of a glass sliding door",
+    "front-facing sliding glass entrance door",
+    "automatic door", "glass door", "hinged door",
 }
 
 DOOR_COMPONENT_LABELS = {
     "doorknob", "door knob", "door handle", "lever handle",
-    "lever door handle", "pull handle", "pull door handle", "push bar",
+    "lever door handle", "pull handle", "pull door handle",
+    "sliding glass door handle", "push bar",
     "door push button", "recessed door handle",
 }
 
@@ -179,7 +194,7 @@ ELEVATOR_SUPPORT_LABELS = {
 CROSSWALK_LABELS = {"crosswalk", "zebra crossing"}
 VEHICLE_LABELS = {CAR_PROMPT, SCOOTER_PROMPT, "car", "scooter", "kick scooter", "electric scooter", "electric kick scooter"}
 
-HANDLE_MIN_CONF = 0.64
+HANDLE_MIN_CONF = 0.56
 DOOR_MIN_CONF = 0.30
 
 AUDIO_FILES = {
@@ -211,7 +226,6 @@ KOREAN_LABELS = {
     "electric scooter": "전동 킥보드",
     "electric kick scooter": "전동 킥보드",
     "bollard": "볼라드",
-    "potted plant": "화분",
     "traffic cone": "콘",
     "utility pole": "전봇대",
     "bicycle": "자전거",
@@ -223,6 +237,7 @@ KOREAN_LABELS = {
     "lever door handle": "레버 손잡이",
     "pull handle": "당김 손잡이",
     "pull door handle": "당김 손잡이",
+    "sliding glass door handle": "유리문 손잡이",
     "push bar": "푸시바",
     "door push button": "문 버튼",
     "recessed door handle": "매립 손잡이",
@@ -231,6 +246,8 @@ KOREAN_LABELS = {
     "room door": "방문",
     "open doorway": "열린 출입구",
     "door frame": "문틀",
+    "front view of a glass sliding door": "유리 미닫이문",
+    "front-facing sliding glass entrance door": "수동 유리 미닫이문",
 }
 
 
@@ -446,7 +463,8 @@ def valid_geometry(det, width, height):
     aspect = bw / bh
 
     if label in DOOR_LABELS:
-        return area_ratio >= 0.0015 and bh >= height * 0.07 and aspect <= 8.0
+        # 정면 유리문은 대비가 약하고 문틀만 보일 수 있으므로 작은 박스도 허용
+        return area_ratio >= 0.0007 and bh >= height * 0.04 and aspect <= 12.0
     if label == "elevator":
         return area_ratio >= ELEVATOR_MIN_AREA_RATIO and bw >= width * ELEVATOR_MIN_WIDTH_RATIO and bh >= height * 0.20
     if label in ELEVATOR_SUPPORT_LABELS:
@@ -479,6 +497,8 @@ def guidance_for_detection(det, width):
         return f"{pos} 문고리. 돌려서 여세요."
     if label in {"door handle", "lever handle", "lever door handle"}:
         return f"{pos} 레버 손잡이. 아래로 눌러 여세요."
+    if label == "sliding glass door handle":
+        return f"{pos} 유리 미닫이문 손잡이. 잡고 옆으로 여세요."
     if label in {"pull handle", "pull door handle"}:
         return f"{pos} 당김 손잡이. 당겨서 여세요."
     if label == "recessed door handle":
@@ -489,9 +509,11 @@ def guidance_for_detection(det, width):
         return f"{pos} 푸시바. 앞으로 미세요."
 
     door_text = {
-        "sliding door": "미닫이문. 옆으로 여세요.",
-        "glass sliding door": "유리 미닫이문. 옆으로 여세요.",
-        "sliding glass door": "유리 미닫이문. 옆으로 여세요.",
+        "sliding door": "미닫이문. 손잡이를 잡고 옆으로 여세요.",
+        "glass sliding door": "수동 유리 미닫이문. 손잡이를 잡고 옆으로 여세요.",
+        "sliding glass door": "수동 유리 미닫이문. 손잡이를 잡고 옆으로 여세요.",
+        "front view of a glass sliding door": "유리 미닫이문. 옆으로 여세요.",
+        "front-facing sliding glass entrance door": "수동 유리 미닫이문. 손잡이를 잡고 옆으로 여세요.",
         "automatic door": "자동문. 잠시 기다리세요.",
         "glass door": "유리문. 손잡이를 확인하세요.",
         "hinged door": "여닫이문. 당기거나 미세요.",
@@ -931,6 +953,16 @@ class DoorComponentConfirm:
                 return True
         return False
 
+    @staticmethod
+    def _same_handle_region(a, b):
+        if a[0] not in DOOR_COMPONENT_LABELS or b[0] not in DOOR_COMPONENT_LABELS:
+            return False
+        if box_iou(a, b) >= 0.03:
+            return True
+        acx, acy = (a[2]+a[4])/2, (a[3]+a[5])/2
+        bcx, bcy = (b[2]+b[4])/2, (b[3]+b[5])/2
+        return ((acx-bcx)**2 + (acy-bcy)**2) ** 0.5 <= 35
+
     def update(self, detections, confirmed_doors):
         candidates = [
             d for d in detections
@@ -942,7 +974,7 @@ class DoorComponentConfirm:
             if self.near_door(det, confirmed_doors):
                 accepted.append(det)
                 continue
-            if any(same_target(old, det) for old in self.previous):
+            if any(self._same_handle_region(old, det) for old in self.previous):
                 accepted.append(det)
         self.previous = candidates
         return accepted
@@ -961,13 +993,24 @@ class DoorConfirm:
         self.count = 0
         self.confirmed = None
 
+    @staticmethod
+    def _same_door_region(a, b):
+        if a[0] not in DOOR_LABELS or b[0] not in DOOR_LABELS:
+            return False
+        if box_iou(a, b) >= 0.04:
+            return True
+        acx, acy = (a[2]+a[4])/2, (a[3]+a[5])/2
+        bcx, bcy = (b[2]+b[4])/2, (b[3]+b[5])/2
+        scale = max(a[4]-a[2], a[5]-a[3], b[4]-b[2], b[5]-b[3], 1)
+        return ((acx-bcx)**2 + (acy-bcy)**2) ** 0.5 <= scale * 0.30
+
     def update(self, doors):
         if not doors:
             self.reset()
             return []
 
         door = max(doors, key=lambda d: d[1])
-        if self.last_box is not None and same_target(self.last_box, door):
+        if self.last_box is not None and self._same_door_region(self.last_box, door):
             self.count += 1
         else:
             self.last_box = door
