@@ -32,8 +32,8 @@ except ImportError:
 # 횡단보도 안전 상태 안내 개선 사항
 # - 차량의 방향을 반복 안내하지 않고 횡단 가능 상태를 판단
 # - 차량이 새로 감지되면 즉시 "멈추세요"
-# - 횡단 상태는 "건너세요" 또는 "건너지 마세요"로 간결하게 안내
-# - 차량 감지/미검출을 여러 프레임 확인해 순간 오인식을 완화
+# - 횡단 상태는 "건너세요" 또는 "멈추세요"로 간결하게 안내
+# - 차량 중심이 2.5초 이상 안정적으로 유지되면 횡단 가능으로 판단
 # - 횡단보도 상태는 1프레임만 감지되어도 즉시 진입
 # ============================================================
 
@@ -45,24 +45,28 @@ IMU_BAUDRATE = 115200
 # 1차 추론은 낮은 threshold로 후보를 확보한 뒤, 아래 후처리에서
 # 클래스별 기준과 기하학 기준을 적용한다.
 CONFIDENCE = 0.20
+YOLO_INFERENCE_CONFIDENCE = 0.08  # 멀리 있는 작은 차량 후보를 확보한 뒤 클래스별 필터링
 NMS_IOU = 0.40
-INFERENCE_SIZE = 768
+INFERENCE_SIZE = 960  # 원거리 차량·오토바이의 작은 박스 해상도 개선
 STATE_CONFIRM_FRAMES = 4
 AUTO_CLAHE = True
 SPEECH_COOLDOWN = 0.22
 URGENT_SPEECH_COOLDOWN = 0.12
 
 # 횡단보도 안전 판단 설정
-CROSSWALK_VEHICLE_MIN_CONF = 0.28
+CROSSWALK_VEHICLE_MIN_CONF = 0.16
 CROSSWALK_CAR_CONFIRM_FRAMES = 1
 CROSSWALK_CLEAR_SECONDS = 2.0
+CROSSWALK_MIN_CONF = 0.36
 CROSSWALK_STATE_HOLD_SECONDS = 10.0
-# 차량 중심 추적: 검출 직후에는 정지, 잠깐의 안정 확인 후에만 횡단 허용
+# 차량 중심 추적: 검출 즉시 정지, 2~3초 안정 확인 후에만 횡단 허용
 VEHICLE_FRAME_HOLD_SECONDS = 0.70
 VEHICLE_ABSENCE_CLEAR_SECONDS = 2.0
-VEHICLE_CENTER_TOLERANCE = 0.045  # 화면 너비 기준 중심 이동 허용치
+VEHICLE_STATIONARY_SECONDS = 2.5  # 중심이 허용 오차 내에서 2~3초 안정되면 횡단 허용
+VEHICLE_CENTER_TOLERANCE = 0.035  # 화면 대각선 정규화 기준 중심 이동 허용치
 VEHICLE_ASSOCIATION_GAP = 0.22
 CROSSWALK_ZONE_COUNT = 4
+CROSSWALK_REPEAT_SECONDS = 5.0
 DOOR_OCR_INTERVAL = 1.0
 DOOR_OCR_REPEAT_SECONDS = 5.0
 
@@ -106,20 +110,47 @@ CAR_PROMPT = "passenger car driving on a road, viewed from a distance"
 SCOOTER_PROMPT = "electric kick scooter on a road"
 MOTORCYCLE_PROMPT = "motorcycle on a road"
 PLAIN_SCOOTER_PROMPT = "scooter on a road"
+CAR_DISTANT_PROMPT = "small distant car driving on a road"
+CAR_FAR_PROMPT = "far away passenger vehicle on a road"
+MOTORCYCLE_RIDER_PROMPT = "motorcycle with a rider on a road"
+MOTORCYCLE_DISTANT_PROMPT = "small distant motorcycle with rider"
+MOTORCYCLIST_PROMPT = "motorcyclist riding a motorcycle on a road"
+SCOOTER_RIDER_PROMPT = "person riding an electric scooter on a road"
+
+GLASS_DOOR_LABELS = {
+    "glass door", "transparent glass door", "clear glass door",
+    "glass entrance door", "large glass entrance door",
+    "commercial glass entrance door", "glass storefront door",
+    "glass panel door", "framed glass door", "glass door with metal frame",
+    "transparent sliding glass door", "sliding glass entrance door",
+    "front view of a glass door", "glass door at a building entrance",
+    "automatic glass door",
+}
 
 CLASS_MIN_CONF = {
     "chair": 0.65,
-    CAR_PROMPT: 0.30,
-    SCOOTER_PROMPT: 0.35,
-    MOTORCYCLE_PROMPT: 0.35,
-    PLAIN_SCOOTER_PROMPT: 0.35,
-    "motorcycle": 0.35,
-    "motorbike": 0.35,
-    "car": 0.30,
-    "scooter": 0.35,
-    "kick scooter": 0.35,
-    "electric scooter": 0.35,
-    "electric kick scooter": 0.35,
+    "crosswalk": CROSSWALK_MIN_CONF,
+    "zebra crossing": CROSSWALK_MIN_CONF,
+    "painted zebra crossing stripes": CROSSWALK_MIN_CONF,
+    "pedestrian crossing stripes on pavement": CROSSWALK_MIN_CONF,
+    "marked pedestrian crosswalk": CROSSWALK_MIN_CONF,
+    CAR_PROMPT: 0.17,
+    CAR_DISTANT_PROMPT: 0.15,
+    CAR_FAR_PROMPT: 0.15,
+    SCOOTER_PROMPT: 0.17,
+    MOTORCYCLE_PROMPT: 0.17,
+    MOTORCYCLE_RIDER_PROMPT: 0.15,
+    MOTORCYCLE_DISTANT_PROMPT: 0.15,
+    MOTORCYCLIST_PROMPT: 0.15,
+    PLAIN_SCOOTER_PROMPT: 0.17,
+    SCOOTER_RIDER_PROMPT: 0.15,
+    "motorcycle": 0.17,
+    "motorbike": 0.17,
+    "car": 0.17,
+    "scooter": 0.17,
+    "kick scooter": 0.17,
+    "electric scooter": 0.17,
+    "electric kick scooter": 0.17,
     "person": 0.40,
     "stairs": 0.45,
     "staircase": 0.45,
@@ -152,6 +183,7 @@ CLASS_MIN_CONF = {
     "push bar": 0.68,
     "door push button": 0.70,
     "recessed door handle": 0.56,
+    **{label: 0.18 for label in GLASS_DOOR_LABELS},
 }
 
 AUDIO_DIR = "audio"
@@ -160,9 +192,15 @@ PROMPTS = [
     "box", "desk", "table", "chair", "bed", "shelf",
     "wardrobe", "closet", "refrigerator", "tree",
     "passenger car driving on a road, viewed from a distance",
+    "small distant car driving on a road",
+    "far away passenger vehicle on a road",
     "electric kick scooter on a road",
     "scooter on a road",
+    "person riding an electric scooter on a road",
     "motorcycle on a road",
+    "motorcycle with a rider on a road",
+    "small distant motorcycle with rider",
+    "motorcyclist riding a motorcycle on a road",
     "bollard", "traffic cone",
     "utility pole", "bicycle", "person", "curb", "railing", "guardrail",
     "door",
@@ -172,6 +210,13 @@ PROMPTS = [
     "sliding glass door viewed straight on",
     "transparent sliding glass entrance door",
     "automatic door", "glass door", "hinged door",
+    "transparent glass door", "clear glass door",
+    "glass entrance door", "large glass entrance door",
+    "commercial glass entrance door", "glass storefront door",
+    "glass panel door", "framed glass door", "glass door with metal frame",
+    "transparent sliding glass door", "sliding glass entrance door",
+    "front view of a glass door", "glass door at a building entrance",
+    "automatic glass door",
     "doorknob", "door knob", "door handle", "lever handle",
     "lever door handle", "pull handle", "pull door handle",
     "sliding glass door handle", "push bar", "door push button", "recessed door handle",
@@ -182,6 +227,9 @@ PROMPTS = [
     "fall hazard sticker on elevator door",
     "elevator safety notice",
     "crosswalk", "zebra crossing",
+    "painted zebra crossing stripes",
+    "pedestrian crossing stripes on pavement",
+    "marked pedestrian crosswalk",
 ]
 
 DOOR_LABELS = {
@@ -189,6 +237,13 @@ DOOR_LABELS = {
     "front view of a glass sliding door", "front facing glass sliding door",
     "sliding glass door viewed straight on", "transparent sliding glass entrance door",
     "automatic door", "glass door", "hinged door",
+    "transparent glass door", "clear glass door",
+    "glass entrance door", "large glass entrance door",
+    "commercial glass entrance door", "glass storefront door",
+    "glass panel door", "framed glass door", "glass door with metal frame",
+    "transparent sliding glass door", "sliding glass entrance door",
+    "front view of a glass door", "glass door at a building entrance",
+    "automatic glass door",
 }
 
 DOOR_COMPONENT_LABELS = {
@@ -211,15 +266,23 @@ ELEVATOR_SUPPORT_LABELS = {
     "fall hazard sticker on elevator door",
     "elevator safety notice",
 }
-CROSSWALK_LABELS = {"crosswalk", "zebra crossing"}
+CROSSWALK_LABELS = {
+    "crosswalk", "zebra crossing",
+    "painted zebra crossing stripes",
+    "pedestrian crossing stripes on pavement",
+    "marked pedestrian crosswalk",
+}
 VEHICLE_LABELS = {
-    CAR_PROMPT, SCOOTER_PROMPT, MOTORCYCLE_PROMPT, PLAIN_SCOOTER_PROMPT,
+    CAR_PROMPT, CAR_DISTANT_PROMPT, CAR_FAR_PROMPT,
+    SCOOTER_PROMPT, SCOOTER_RIDER_PROMPT,
+    MOTORCYCLE_PROMPT, MOTORCYCLE_RIDER_PROMPT,
+    MOTORCYCLE_DISTANT_PROMPT, MOTORCYCLIST_PROMPT, PLAIN_SCOOTER_PROMPT,
     "car", "motorcycle", "motorbike", "scooter", "kick scooter",
     "electric scooter", "electric kick scooter",
 }
 
 HANDLE_MIN_CONF = 0.50
-DOOR_MIN_CONF = 0.30
+DOOR_MIN_CONF = 0.18
 
 AUDIO_FILES = {
     "vehicle_left": "vehicle_left.wav",
@@ -240,8 +303,14 @@ KOREAN_LABELS = {
     "tree": "나무",
     "car": "차량",
     CAR_PROMPT: "차량",
+    CAR_DISTANT_PROMPT: "차량",
+    CAR_FAR_PROMPT: "차량",
     SCOOTER_PROMPT: "킥보드",
+    SCOOTER_RIDER_PROMPT: "킥보드",
     MOTORCYCLE_PROMPT: "오토바이",
+    MOTORCYCLE_RIDER_PROMPT: "오토바이",
+    MOTORCYCLE_DISTANT_PROMPT: "오토바이",
+    MOTORCYCLIST_PROMPT: "오토바이",
     PLAIN_SCOOTER_PROMPT: "스쿠터",
     "motorcycle": "오토바이",
     "motorbike": "오토바이",
@@ -272,6 +341,7 @@ KOREAN_LABELS = {
     "front facing glass sliding door": "유리 미닫이문",
     "sliding glass door viewed straight on": "유리 미닫이문",
     "transparent sliding glass entrance door": "유리 미닫이문",
+    **{label: "유리문" for label in GLASS_DOOR_LABELS},
 }
 
 
@@ -369,7 +439,7 @@ class Speech:
 
     def say(self, key, text, force=False):
         # 차량 감지 중에는 일반 사물/OCR 안내를 무시한다.
-        # 횡단 상태 안내(건너세요/건너지 마세요)만 허용한다.
+        # 횡단 상태 안내(건너세요/멈추세요)만 허용한다.
         if self.vehicle_priority and not key.startswith(("crosswalk_", "traffic_")):
             return
         now = time.time()
@@ -427,7 +497,7 @@ class Speech:
 
     def say_crosswalk_status(self, status, force=True):
         if status in {"WAIT", "UNKNOWN"}:
-            self.say("crosswalk_wait", "건너지 마세요", force=force)
+            self.say("crosswalk_wait", "멈추세요", force=force)
         elif status == "CLEAR":
             self.say("crosswalk_clear", "건너세요", force=force)
 
@@ -507,6 +577,29 @@ def expanded_box(x1, y1, x2, y2, width, height, vertical_ratio=0.18):
 
 
 
+
+def deduplicate_vehicle_detections(detections):
+    """서로 다른 유사 프롬프트가 같은 차량에 만든 중복 박스를 하나로 합친다."""
+    kept = []
+    for det in sorted(detections, key=lambda d: d[1], reverse=True):
+        _, _, x1, y1, x2, y2 = det
+        area = max(1, (x2-x1)*(y2-y1))
+        duplicate = False
+        for old in kept:
+            _, _, ox1, oy1, ox2, oy2 = old
+            iw = max(0, min(x2, ox2)-max(x1, ox1))
+            ih = max(0, min(y2, oy2)-max(y1, oy1))
+            inter = iw*ih
+            old_area = max(1, (ox2-ox1)*(oy2-oy1))
+            iou = inter / max(1, area+old_area-inter)
+            containment = inter / max(1, min(area, old_area))
+            if iou >= 0.30 or containment >= 0.70:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(det)
+    return kept
+
 def deduplicate_detections(detections):
     """동일 클래스의 겹치거나 안쪽에 중복된 박스를 합친다.
 
@@ -551,9 +644,16 @@ def valid_geometry(det, width, height):
     area_ratio = (bw * bh) / max(1, width * height)
     aspect = bw / bh
 
+    if label in VEHICLE_LABELS:
+        # 원거리 차량/오토바이는 박스가 작으므로 일반 사물보다 작은 크기까지 허용
+        return (bw >= 5 and bh >= 5 and area_ratio >= 0.00005
+                and area_ratio <= 0.45 and 0.18 <= aspect <= 8.0)
+    if label in CROSSWALK_LABELS:
+        # 도로 면 전체가 아니라 실제 횡단보도 표시로 보이는 유효 박스만 허용
+        return area_ratio >= 0.00020 and bw >= width * 0.025 and bh >= height * 0.015
     if label in DOOR_LABELS:
         # 정면 유리문은 투명해 박스가 작고 얇게 잡힐 수 있다.
-        if label in {
+        if label in GLASS_DOOR_LABELS or label in {
             "glass sliding door", "sliding glass door",
             "front view of a glass sliding door", "front facing glass sliding door",
             "sliding glass door viewed straight on", "transparent sliding glass entrance door",
@@ -602,6 +702,15 @@ def guidance_for_detection(det, width):
         return f"{pos} 문 버튼. 눌러서 여세요."
     if label == "push bar":
         return f"{pos} 푸시바. 앞으로 미세요."
+
+    sliding_glass_labels = {
+        "glass sliding door", "sliding glass door",
+        "front view of a glass sliding door", "front facing glass sliding door",
+        "sliding glass door viewed straight on", "transparent sliding glass entrance door",
+        "transparent sliding glass door", "sliding glass entrance door",
+    }
+    if label in GLASS_DOOR_LABELS and label not in sliding_glass_labels:
+        return f"{pos} 유리문. 손잡이를 확인하세요."
 
     door_text = {
         "sliding door": "미닫이문. 손잡이를 잡고 옆으로 여세요.",
@@ -867,127 +976,140 @@ class VehicleMotionTracker:
         return approaching, bool(relevant), stationary_confirmed
 
 
-class CrosswalkSafety:
-    """차량 중심을 4개 횡단 구역에 투영해 보수적으로 횡단 상태를 판단한다.
+def crosswalk_alignment_box(width, height):
+    """중앙 정렬 안내 영역. 횡단보도 중심이 이 상자 안으로 들어오면 정렬 완료."""
+    return (int(width * 0.25), int(height * 0.20),
+            int(width * 0.75), int(height * 0.82))
 
-    차량 신규 검출/정면 차량/구역 이동은 즉시 WAIT. 검출 중심이 잠깐 유지되고
-    허용 오차 내에서 한 구역에 머무는 것이 확인된 경우에만 CLEAR로 바꾼다.
-    차량 검출 프레임은 짧게 보존해 1~2프레임 누락으로 상태가 흔들리지 않게 한다.
-    이 영상 기반 휴리스틱은 실제 교통 신호나 안전 확인을 대체하지 않는다.
-    """
+
+class CrosswalkAlignment:
+    def __init__(self):
+        self.aligned = False
+        self.last_detection_time = None
+
+    def reset(self):
+        self.aligned = False
+        self.last_detection_time = None
+
+    def update(self, detections, width, height, now=None):
+        now = time.monotonic() if now is None else now
+        if detections:
+            self.last_detection_time = now
+            x1, y1, x2, y2 = crosswalk_alignment_box(width, height)
+            for det in detections:
+                cx = (det[2] + det[4]) / 2
+                cy = (det[3] + det[5]) / 2
+                if x1 <= cx <= x2 and y1 <= cy <= y2:
+                    self.aligned = True
+                    return True
+            self.aligned = False
+            return False
+
+        # 잠깐의 횡단보도 검출 누락은 정렬 상태를 유지하지만 장시간은 해제.
+        if (self.aligned and self.last_detection_time is not None
+                and now - self.last_detection_time <= 1.5):
+            return True
+        self.aligned = False
+        return False
+
+
+class CrosswalkSafety:
+    """차량별 중심을 추적한다. 2.5초 동안 위치가 허용 오차 내로 안정되면 CLEAR."""
 
     def __init__(self):
         self.status = None
-        self.last_seen = None
-        self.target_center = None
-        self.target_zone = None
-        self.first_zone = None
-        self.hold_started = None
-        self.recent_centers = deque(maxlen=12)
+        self.tracks = []
+        self.next_track_id = 1
         self.last_stop_reason = None
 
     def reset(self):
         self.status = None
-        self.last_seen = None
-        self.target_center = None
-        self.target_zone = None
-        self.first_zone = None
-        self.hold_started = None
-        self.recent_centers.clear()
+        self.tracks.clear()
         self.last_stop_reason = None
+
+    @staticmethod
+    def _center(det):
+        return ((det[2]+det[4])/2.0, (det[3]+det[5])/2.0)
+
+    @staticmethod
+    def _distance(a, b, width, height):
+        dx = (a[0]-b[0]) / max(1, width)
+        dy = (a[1]-b[1]) / max(1, height)
+        return (dx*dx + dy*dy) ** 0.5
+
+    def update(self, vehicles, width, height, now=None):
+        now = time.monotonic() if now is None else now
+        unmatched_tracks = set(range(len(self.tracks)))
+        urgent = False
+        moving = False
+
+        # 먼저 오래 미검출된 트랙을 정리한다.
+        self.tracks = [t for t in self.tracks
+                       if now - t["last_seen"] < VEHICLE_ABSENCE_CLEAR_SECONDS]
+        unmatched_tracks = set(range(len(self.tracks)))
+
+        for det in sorted(vehicles, key=lambda d: proximity_score(d, width, height), reverse=True):
+            center = self._center(det)
+            candidates = [
+                (self._distance(center, self.tracks[i]["center"], width, height), i)
+                for i in unmatched_tracks
+                if self.tracks[i]["label"] == det[0]
+                or self._distance(center, self.tracks[i]["center"], width, height) <= VEHICLE_ASSOCIATION_GAP
+            ]
+            match = min(candidates, default=None)
+            if match is None or match[0] > VEHICLE_ASSOCIATION_GAP:
+                self.tracks.append({
+                    "id": self.next_track_id,
+                    "label": det[0],
+                    "center": center,
+                    "anchor": center,
+                    "stable_since": now,
+                    "last_seen": now,
+                    "zone": self.zone_index(center[0], width),
+                })
+                self.next_track_id += 1
+                urgent = True
+                moving = True
+                continue
+
+            _, i = match
+            unmatched_tracks.discard(i)
+            track = self.tracks[i]
+            drift = self._distance(center, track["anchor"], width, height)
+            gap = now - track["last_seen"]
+            if drift > VEHICLE_CENTER_TOLERANCE or gap > VEHICLE_ABSENCE_CLEAR_SECONDS:
+                # 이동 또는 긴 검출 공백: 안정 시간 다시 계산
+                track["anchor"] = center
+                track["stable_since"] = now
+                moving = True
+            track["center"] = center
+            track["label"] = det[0]
+            track["last_seen"] = now
+            track["zone"] = self.zone_index(center[0], width)
+
+        # 미검출 차량은 잠시 유지하되, 안정 차량으로 간주하지 않는다.
+        active_tracks = [t for t in self.tracks
+                         if now - t["last_seen"] < VEHICLE_ABSENCE_CLEAR_SECONDS]
+        all_visible_and_stable = bool(active_tracks) and all(
+            now - t["last_seen"] <= VEHICLE_FRAME_HOLD_SECONDS
+            and now - t["stable_since"] >= VEHICLE_STATIONARY_SECONDS
+            for t in active_tracks
+        )
+
+        if vehicles and all_visible_and_stable and not moving:
+            self.status = "CLEAR"
+        elif active_tracks:
+            self.status = "WAIT"
+        else:
+            self.status = "CLEAR"
+
+        self.last_stop_reason = "new_or_moving_vehicle" if (urgent or moving) else None
+        return self.status, urgent
 
     @staticmethod
     def zone_index(center_x, width):
         return min(CROSSWALK_ZONE_COUNT - 1,
                    max(0, int((center_x / max(1, width)) * CROSSWALK_ZONE_COUNT)))
-
-    def update(self, vehicles, width, height, now=None):
-        now = time.monotonic() if now is None else now
-        urgent = False
-        reason = None
-
-        if vehicles:
-            # 중앙/하단의 차량을 우선 추적하고, 첫 프레임에서는 화면 중앙에 가까운 차량 선택
-            det = max(vehicles, key=lambda d: proximity_score(d, width, height))
-            _, _, x1, y1, x2, y2 = det
-            center = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
-            zone_id = self.zone_index(center[0], width)
-            previous_recent = self.last_seen is not None and now - self.last_seen <= VEHICLE_FRAME_HOLD_SECONDS
-            is_new = not previous_recent
-            if previous_recent and self.target_center is not None:
-                gap_x = abs(center[0] - self.target_center[0]) / max(1, width)
-                gap_y = abs(center[1] - self.target_center[1]) / max(1, height)
-                if (gap_x * gap_x + gap_y * gap_y) ** 0.5 > VEHICLE_ASSOCIATION_GAP:
-                    is_new = True
-
-            if is_new:
-                self.hold_started = now
-                self.first_zone = zone_id
-                self.recent_centers.clear()
-                urgent = True
-                reason = "new_vehicle"
-            elif self.hold_started is None:
-                self.hold_started = now
-                self.first_zone = zone_id
-
-            # 새 트랙 이외의 차량은 중심 이동량을 추적
-            if not is_new and self.target_center is not None:
-                delta = ((center[0] - self.target_center[0]) ** 2 +
-                         (center[1] - self.target_center[1]) ** 2) ** 0.5
-                if zone_id != self.target_zone:
-                    reason = "zone_change"
-                elif delta / max(1, width) > VEHICLE_CENTER_TOLERANCE:
-                    reason = "center_moving"
-
-            front_vehicle = (0.36 <= center[0] / max(1, width) <= 0.64
-                             and center[1] / max(1, height) >= 0.48)
-            if front_vehicle:
-                # 최초 감지 시(is_new)에는 즉시 정지 음성을 이미 보낸다.
-                # 같은 차량이 계속 정면에 있는 동안 매 프레임 반복 발화하지 않는다.
-                reason = "front_vehicle"
-
-            self.target_center = center
-            self.target_zone = zone_id
-            self.last_seen = now
-            self.recent_centers.append((now, center, zone_id))
-            while self.recent_centers and now - self.recent_centers[0][0] > VEHICLE_FRAME_HOLD_SECONDS:
-                self.recent_centers.popleft()
-
-            zones = {item[2] for item in self.recent_centers}
-            xs = [item[1][0] / max(1, width) for item in self.recent_centers]
-            stable_center = bool(xs) and max(xs) - min(xs) <= VEHICLE_CENTER_TOLERANCE
-            held_long_enough = self.hold_started is not None and now - self.hold_started >= VEHICLE_FRAME_HOLD_SECONDS
-            stable_in_one_zone = held_long_enough and len(zones) == 1 and stable_center
-
-            # 한 번이라도 구역을 이동한 차량은 이동 중으로 보고, 한 프레임의 떨림으로 CLEAR하지 않는다.
-            if reason in {"zone_change", "center_moving"} or len(zones) > 1:
-                self.status = "WAIT"
-            elif stable_in_one_zone:
-                self.status = "CLEAR"
-            else:
-                self.status = "WAIT"
-            self.last_stop_reason = reason
-            return self.status, urgent
-
-        # 차량이 잠시 사라져도 홀드 구간에는 정지 상태를 유지
-        if self.last_seen is not None:
-            absent = now - self.last_seen
-            if absent <= VEHICLE_FRAME_HOLD_SECONDS:
-                self.status = "WAIT"
-                return self.status, False
-            if absent < VEHICLE_ABSENCE_CLEAR_SECONDS:
-                self.status = "WAIT"
-                return self.status, False
-
-        self.status = "CLEAR"
-        self.target_center = None
-        self.target_zone = None
-        self.first_zone = None
-        self.hold_started = None
-        self.recent_centers.clear()
-        self.last_seen = None
-        self.last_stop_reason = None
-        return self.status, False
 
 
 class StairConfirm:
@@ -1427,6 +1549,7 @@ def main():
     machine = SituationMachine()
     vehicle_tracker = VehicleMotionTracker()
     crosswalk_safety = CrosswalkSafety()
+    crosswalk_alignment = CrosswalkAlignment()
     target_selector = TargetSelector()
     door_confirm = DoorConfirm()
     door_component_confirm = DoorComponentConfirm()
@@ -1434,6 +1557,8 @@ def main():
     elevator_confirm = ElevatorConfirm()
     last_guidance_key = None
     last_traffic_status = None
+    last_crosswalk_clear_announce = 0.0
+    last_crosswalk_align_announce = 0.0
 
     while True:
         ok, frame = cap.read()
@@ -1444,14 +1569,15 @@ def main():
         inference_frame = prepare_inference_frame(frame)
         result = model.predict(
             inference_frame,
-            conf=CONFIDENCE,
+            conf=YOLO_INFERENCE_CONFIDENCE,
             iou=NMS_IOU,
             imgsz=INFERENCE_SIZE,
-            max_det=30,
+            max_det=50,
             verbose=False,
         )[0]
 
         all_dets = []
+        crosswalk_vehicles = []
         for box in result.boxes:
             cls_id = int(box.cls[0])
             conf = float(box.conf[0])
@@ -1460,6 +1586,17 @@ def main():
             det = (label, conf, x1, y1, x2, y2)
             if conf >= class_min_conf(label) and valid_geometry(det, w, h):
                 all_dets.append(det)
+                if label in VEHICLE_LABELS and conf >= CROSSWALK_VEHICLE_MIN_CONF:
+                    crosswalk_vehicles.append(det)
+
+        crosswalk_vehicles = deduplicate_vehicle_detections(crosswalk_vehicles)
+        # 차량 결과가 만들어지는 즉시 정지 안내를 먼저 보낸다.
+        # 문/OCR/계단 등 나머지 후처리와 안내보다 앞에서 실행해 지연을 줄인다.
+        speech.set_vehicle_priority(bool(crosswalk_vehicles))
+        traffic_status, urgent_stop = crosswalk_safety.update(crosswalk_vehicles, w, h)
+        if urgent_stop:
+            speech.say_urgent("traffic_stop", "멈추세요")
+            last_guidance_key = "traffic:WAIT"
 
         all_dets = deduplicate_detections(all_dets)
 
@@ -1523,6 +1660,7 @@ def main():
             d for d in filtered_for_guidance
             if d[0] in CROSSWALK_LABELS
         ]
+        crosswalk_aligned = crosswalk_alignment.update(crosswalk_dets, w, h)
         elevator_dets = confirmed_elevators
 
         state = machine.update(active + crosswalk_dets + confirmed_stairs + elevator_dets)
@@ -1531,37 +1669,48 @@ def main():
         # 최우선 정지 게이트: 신규 차량 검출 시 다른 안내를 중단하고 즉시 "멈추세요".
         # 횡단보도 상태뿐 아니라 일반 보행 모드에서도 동일하게 적용한다.
         # ----------------------------------------------------
-        crosswalk_vehicles = [
-            d for d in filtered
-            if d[0] in VEHICLE_LABELS and d[1] >= CROSSWALK_VEHICLE_MIN_CONF
-        ]
-        speech.set_vehicle_priority(bool(crosswalk_vehicles))
-        traffic_status, urgent_stop = crosswalk_safety.update(crosswalk_vehicles, w, h)
         primary = None
 
-        # 횡단보도 표식은 ROI 밖이어도 상태 전환에 사용한다.
-        if state == "CROSSWALK":
+        # 횡단보도 자체가 인식된 때만 정렬 안내/횡단 상태를 말한다.
+        # 중심 정렬 전에는 가운데 정렬을 유도하고, 정렬되면 교통 판단 단계로 넘어간다.
+        if state == "CROSSWALK" and crosswalk_dets:
             status_changed = traffic_status != last_traffic_status
             if urgent_stop:
-                speech.say_urgent("traffic_stop", "멈추세요")
                 last_guidance_key = "traffic:WAIT"
+            elif not crosswalk_aligned:
+                now = time.monotonic()
+                if now - last_crosswalk_align_announce >= 3.0:
+                    speech.say("crosswalk_align", "횡단보도를 가운데로 맞춰주세요", force=True)
+                    last_crosswalk_align_announce = now
+                last_crosswalk_clear_announce = 0.0
+                last_guidance_key = "crosswalk:ALIGN"
             elif status_changed and traffic_status == "WAIT":
-                speech.say("crosswalk_wait", "건너지 마세요", force=True)
+                speech.say("crosswalk_wait", "멈추세요", force=True)
                 last_guidance_key = "traffic:WAIT"
             elif traffic_status == "CLEAR":
-                # 건널 수 있는 동안 주기적으로 반복 안내 (say 내부에서 2초 간격 제한)
-                speech.say("crosswalk_clear", "건너세요", force=True)
+                # 정렬 후 횡단보도 차량 판단이 끝난 동안 반복 안내
+                now = time.monotonic()
+                if now - last_crosswalk_clear_announce >= CROSSWALK_REPEAT_SECONDS:
+                    speech.say("crosswalk_clear", "건너세요", force=True)
+                    last_crosswalk_clear_announce = now
                 last_guidance_key = "traffic:CLEAR"
+            else:
+                last_crosswalk_clear_announce = 0.0
             target_selector.reset()
         elif urgent_stop or traffic_status == "WAIT":
+            last_crosswalk_align_announce = 0.0
+            last_crosswalk_clear_announce = 0.0
             # stop 상태가 활성화된 동안 일반 사물·문·계단 음성은 내보내지 않는다.
             if urgent_stop:
-                speech.say_urgent("traffic_stop", "멈추세요")
+                pass  # 즉시 정지 음성은 결과 직후 이미 출력함
             elif last_guidance_key != "traffic:WAIT":
-                speech.say("traffic_wait", "건너지 마세요", force=True)
+                speech.say("traffic_wait", "멈추세요", force=True)
             last_guidance_key = "traffic:WAIT"
             target_selector.reset()
         else:
+            # 횡단보도가 현재 프레임에서 확인되지 않으면 횡단 안내를 하지 않는다.
+            last_crosswalk_align_announce = 0.0
+            last_crosswalk_clear_announce = 0.0
             obstacle_candidates = [
                 d for d in active
                 if is_walk_obstacle(d)
@@ -1584,14 +1733,19 @@ def main():
 
         # 화면 표시
         rx1, ry1, rx2, ry2 = roi(w, h)
-        cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0, 180, 255), 2)
-        if state == "CROSSWALK":
-            # 화면을 차량 이동 추적용 4개 구역으로 나눠 표시
-            for zone_i in range(CROSSWALK_ZONE_COUNT + 1):
+        if state != "CROSSWALK":
+            cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0, 180, 255), 2)
+        elif crosswalk_dets and not crosswalk_aligned:
+            # 정렬 단계에만 가운데 안내 상자를 표시
+            gx1, gy1, gx2, gy2 = crosswalk_alignment_box(w, h)
+            cv2.rectangle(frame, (gx1, gy1), (gx2, gy2), (0, 200, 255), 2)
+            cv2.putText(frame, "CENTER CROSSWALK HERE", (gx1 + 8, max(25, gy1 - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 200, 255), 2)
+        elif state == "CROSSWALK" and crosswalk_aligned:
+            # 상자 안내를 지우고 전체 화면을 4개 세로 구역으로 나눠 차량 이동 추적
+            for zone_i in range(1, CROSSWALK_ZONE_COUNT):
                 zx = int(w * zone_i / CROSSWALK_ZONE_COUNT)
                 cv2.line(frame, (zx, 0), (zx, h), (80, 80, 220), 1)
-                if zone_i < CROSSWALK_ZONE_COUNT:
-                    cv2.rectangle(frame, (zx, 0), (int(w*(zone_i+1)/CROSSWALK_ZONE_COUNT), h), (80,80,220), 1)
 
         for det in all_dets:
             label, conf, x1, y1, x2, y2 = det
@@ -1599,8 +1753,8 @@ def main():
                 x1, y1, x2, y2, w, h
             )
 
-            if label in VEHICLE_LABELS:
-                # 차량 박스 중심의 가로/세로 기준선을 실시간 표시
+            if label in VEHICLE_LABELS and state == "CROSSWALK" and crosswalk_aligned:
+                # 정렬 완료 뒤 차량 중심의 가로/세로선을 화면 끝까지 표시
                 cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
                 cv2.line(frame, (0, cy), (w - 1, cy), (0, 0, 255), 2)
                 cv2.line(frame, (cx, 0), (cx, h - 1), (0, 0, 255), 2)
@@ -1631,7 +1785,7 @@ def main():
 
         cv2.putText(
             frame,
-            "STATE: {} | TRAFFIC: {} | A:auto 1:walk 2:door 3:stairs 4:crosswalk Q:quit".format(state, traffic_status),
+            "STATE: {} | TRAFFIC: {} | CROSSWALK: {} | A:auto 1:walk 2:door 3:stairs 4:crosswalk Q:quit".format(state, traffic_status, "ALIGNED" if crosswalk_aligned else "ALIGN"),
             (15, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.58,
