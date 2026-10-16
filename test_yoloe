@@ -47,7 +47,12 @@ IMU_BAUDRATE = 115200
 CONFIDENCE = 0.20
 YOLO_INFERENCE_CONFIDENCE = 0.08  # 멀리 있는 작은 차량 후보를 확보한 뒤 클래스별 필터링
 NMS_IOU = 0.40
-INFERENCE_SIZE = 960  # 원거리 차량·오토바이의 작은 박스 해상도 개선
+# 기본은 기존 960을 유지한다. 동일 영상으로 비교할 때 환경변수로 832/640을 시험할 수 있다.
+INFERENCE_SIZE = int(os.getenv("WALKING_ASSISTANT_INFERENCE_SIZE", "960"))
+PROFILE_TIMING = os.getenv("WALKING_ASSISTANT_PROFILE", "1").strip().lower() not in {"0", "false", "no"}
+PROFILE_INTERVAL_SECONDS = 5.0
+# CUDA 비동기 추론의 실제 시간을 재려면 1로 설정(측정 중 동기화 오버헤드가 생길 수 있음).
+PROFILE_CUDA_SYNC = os.getenv("WALKING_ASSISTANT_PROFILE_CUDA_SYNC", "0").strip().lower() in {"1", "true", "yes"}
 STATE_CONFIRM_FRAMES = 4
 AUTO_CLAHE = True
 SPEECH_COOLDOWN = 0.22
@@ -232,6 +237,17 @@ PROMPTS = [
     "marked pedestrian crosswalk",
 ]
 
+# 횡단보도 모드에서는 차량·킥보드·오토바이와 횡단보도만 추론한다.
+# 모드가 바뀔 때만 set_classes를 호출해 매 프레임 프롬프트 인코딩을 반복하지 않는다.
+TRAFFIC_PROMPTS = [
+    CAR_PROMPT, CAR_DISTANT_PROMPT, CAR_FAR_PROMPT,
+    SCOOTER_PROMPT, PLAIN_SCOOTER_PROMPT, SCOOTER_RIDER_PROMPT,
+    MOTORCYCLE_PROMPT, MOTORCYCLE_RIDER_PROMPT,
+    MOTORCYCLE_DISTANT_PROMPT, MOTORCYCLIST_PROMPT,
+    "crosswalk", "zebra crossing", "painted zebra crossing stripes",
+    "pedestrian crossing stripes on pavement", "marked pedestrian crosswalk",
+]
+
 DOOR_LABELS = {
     "door", "sliding door", "glass sliding door", "sliding glass door",
     "front view of a glass sliding door", "front facing glass sliding door",
@@ -389,48 +405,119 @@ class Speech:
         self.process_lock = threading.Lock()
         self.engine = None
         self.vehicle_priority = False
-        threading.Thread(target=self._worker, daemon=True).start()
+        self.engine_ready = threading.Event()
+        self.worker = threading.Thread(target=self._worker, name="speech-worker", daemon=True)
+        self.worker.start()
+        # 엔진 초기화를 차량 감지 순간까지 미루지 않도록 시작 단계에서 기다린다.
+        if not self.engine_ready.wait(timeout=10.0):
+            print("음성 엔진 초기화가 10초 안에 끝나지 않았습니다. 음성 출력이 지연될 수 있습니다.")
+        elif self.engine is not None:
+            print("음성 엔진 준비 완료: Windows SAPI")
+
+    @staticmethod
+    def _powershell_command():
+        # Keep one Windows SAPI process alive: spawning PowerShell per utterance
+        # caused the 1-2 second delay. SpeakAsync lets it accept CANCEL immediately.
+        ps = (
+            "$ErrorActionPreference='Stop'; "
+            "Add-Type -AssemblyName System.Speech; "
+            "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            "$s.Volume=100; $s.Rate=1; "
+            "$v=$s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -like 'ko-*' } | Select-Object -First 1; "
+            "if ($v) { $s.SelectVoice($v.VoiceInfo.Name); [Console]::Out.WriteLine('BAZE_TTS_VOICE=' + $v.VoiceInfo.Name) } "
+            "else { [Console]::Out.WriteLine('BAZE_TTS_WARNING=Korean voice not installed; Windows default voice selected') }; "
+            "[Console]::Out.WriteLine('BAZE_TTS_READY'); [Console]::Out.Flush(); "
+            "[Console]::InputEncoding=New-Object System.Text.UTF8Encoding($false); "
+            "while ($null -ne ($line=[Console]::In.ReadLine())) { "
+            "if ($line -eq 'CANCEL') { $s.SpeakAsyncCancelAll(); continue }; "
+            "if ($line.StartsWith('SPEAK:')) { "
+            "$s.SpeakAsyncCancelAll(); "
+            "$b=[Convert]::FromBase64String($line.Substring(6)); "
+            "$t=[System.Text.Encoding]::UTF8.GetString($b); "
+            "$null=$s.SpeakAsync($t) } }; $s.Dispose()"
+        )
+        encoded = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
+        return ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded]
+
+    def _read_server_output(self, proc):
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if line == "BAZE_TTS_READY":
+                    self.engine_ready.set()
+                elif line.startswith("BAZE_TTS_VOICE="):
+                    print("[사용 음성]", line.split("=", 1)[1])
+                elif line.startswith("BAZE_TTS_WARNING="):
+                    print("[음성 설정 확인]", line.split("=", 1)[1])
+                elif line:
+                    print("[음성 엔진]", line)
+        except Exception as exc:
+            print("[음성 엔진 출력 감시 오류]", exc)
+        finally:
+            self.engine_ready.set()
+
+    def _start_speech_server(self):
+        try:
+            proc = subprocess.Popen(
+                self._powershell_command(),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+            with self.process_lock:
+                self.current_process = proc
+            threading.Thread(
+                target=self._read_server_output,
+                args=(proc,),
+                name="speech-server-output",
+                daemon=True,
+            ).start()
+            if not self.engine_ready.wait(timeout=8.0):
+                print("[음성 출력 실패] Windows SAPI 서버가 준비되지 않았습니다.")
+            elif proc.poll() is None:
+                print("음성 출력 경로 준비 완료: 상시 실행 Windows SAPI")
+            return proc
+        except Exception as exc:
+            print("[음성 출력 실패] Windows SAPI 서버 시작 오류:", repr(exc))
+            self.engine_ready.set()
+            return None
+
+    def _send_speech_command(self, command):
+        with self.process_lock:
+            proc = self.current_process
+            if proc is None or proc.poll() is not None or proc.stdin is None:
+                print("[음성 출력 실패] 상시 실행 음성 서버가 종료되어 있습니다.")
+                return False
+            try:
+                proc.stdin.write(command + "\n")
+                proc.stdin.flush()
+                return True
+            except Exception as exc:
+                print("[음성 출력 실패] 음성 명령 전송 오류:", repr(exc))
+                return False
+
+    def _speak_with_windows(self, text):
+        payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        return self._send_speech_command("SPEAK:" + payload)
 
     def _worker(self):
-        engine = None
-        try:
-            # Keep one Windows SAPI engine alive; launching PowerShell for every
-            # short instruction adds noticeable latency.
-            engine = pyttsx3.init("sapi5")
-            self.engine = engine
-            engine.setProperty("rate", 195)
-            engine.setProperty("volume", 1.0)
-        except Exception as exc:
-            print("SAPI 음성 엔진 초기화 오류:", exc)
-
+        proc = self._start_speech_server()
         while True:
-            key, text = self.jobs.get()
+            key, text, submitted_perf = self.jobs.get()
             try:
-                if engine is not None:
-                    engine.say(text)
-                    engine.runAndWait()
-                else:
-                    # Fallback only if the persistent pyttsx3/SAPI engine failed.
-                    ps = (
-                        "Add-Type -AssemblyName System.Speech; "
-                        "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                        "$s.Volume=100; $s.Rate=2; "
-                        "$s.Speak(" + repr(text) + "); $s.Dispose()"
-                    )
-                    encoded = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
-                    subprocess.run(
-                        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=8,
-                    )
-            except Exception as exc:
-                print("음성 출력 오류:", exc)
-                try:
-                    if engine is not None:
-                        engine.stop()
-                except Exception:
-                    pass
+                wait_ms = (time.perf_counter() - submitted_perf) * 1000.0
+                if key == "traffic_stop":
+                    print(f"[성능] 정지 음성 작업자 대기={wait_ms:.1f}ms")
+                print(f"[음성 출력 시작] {text}")
+                if proc is None or proc.poll() is not None:
+                    print("[음성 출력 실패] 음성 서버가 실행 중이 아닙니다.")
+                    continue
+                if self._speak_with_windows(text):
+                    print(f"[음성 명령 전달 완료] {text}")
             finally:
                 self.jobs.task_done()
 
@@ -460,7 +547,7 @@ class Speech:
             pass
 
         try:
-            self.jobs.put_nowait((key, text))
+            self.jobs.put_nowait((key, text, time.perf_counter()))
         except queue.Full:
             pass
 
@@ -470,9 +557,10 @@ class Speech:
         # 이 함수는 신규 차량 검출 이벤트에서 호출한다. 신규 검출은 즉시 알린다.
         self.last_key = key
         self.last_submit_time = now
+        print(f"[긴급 음성 요청] {text}")
         try:
-            if self.engine is not None:
-                self.engine.stop()
+            if self._send_speech_command("CANCEL"):
+                print("[긴급] 재생 중인 안내에 즉시 중단 명령을 보냈습니다.")
         except Exception as exc:
             print("긴급 음성 중단 요청 오류:", exc)
         try:
@@ -482,7 +570,7 @@ class Speech:
         except queue.Empty:
             pass
         try:
-            self.jobs.put_nowait((key, text))
+            self.jobs.put_nowait((key, text, time.perf_counter()))
         except queue.Full:
             pass
 
@@ -1523,10 +1611,25 @@ class LatestFrameCapture:
         self.capture.release()
         self.reader.join(timeout=2.0)
 
+def sync_cuda_for_profile(model):
+    """선택적으로 CUDA 비동기 추론을 동기화해 단계별 시간을 정확히 잰다."""
+    if not PROFILE_CUDA_SYNC:
+        return
+    try:
+        import torch
+        device = getattr(model, "device", None)
+        if torch.cuda.is_available() and str(device).startswith("cuda"):
+            torch.cuda.synchronize(device)
+    except Exception:
+        pass
+
+
 def main():
     print("YOLOE 모델 로딩 중...")
+    print(f"추론 크기: {INFERENCE_SIZE} | 단계별 시간 측정: {'ON' if PROFILE_TIMING else 'OFF'}")
     model = YOLOE(MODEL_PATH)
     model.set_classes(PROMPTS)
+    active_prompt_mode = "GENERAL"
 
     raw_cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
     raw_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -1559,14 +1662,21 @@ def main():
     last_traffic_status = None
     last_crosswalk_clear_announce = 0.0
     last_crosswalk_align_announce = 0.0
+    profile_samples = deque(maxlen=120)
+    last_profile_log = time.monotonic()
 
     while True:
+        frame_started = time.perf_counter()
         ok, frame = cap.read()
+        capture_finished = time.perf_counter()
         if not ok:
             break
 
         h, w = frame.shape[:2]
         inference_frame = prepare_inference_frame(frame)
+        preprocess_finished = time.perf_counter()
+        sync_cuda_for_profile(model)
+        inference_started = time.perf_counter()
         result = model.predict(
             inference_frame,
             conf=YOLO_INFERENCE_CONFIDENCE,
@@ -1575,6 +1685,10 @@ def main():
             max_det=50,
             verbose=False,
         )[0]
+        sync_cuda_for_profile(model)
+        inference_finished = time.perf_counter()
+        urgent_detect_to_submit_ms = None
+        urgent_speech_call_ms = None
 
         all_dets = []
         crosswalk_vehicles = []
@@ -1590,14 +1704,6 @@ def main():
                     crosswalk_vehicles.append(det)
 
         crosswalk_vehicles = deduplicate_vehicle_detections(crosswalk_vehicles)
-        # 차량 결과가 만들어지는 즉시 정지 안내를 먼저 보낸다.
-        # 문/OCR/계단 등 나머지 후처리와 안내보다 앞에서 실행해 지연을 줄인다.
-        speech.set_vehicle_priority(bool(crosswalk_vehicles))
-        traffic_status, urgent_stop = crosswalk_safety.update(crosswalk_vehicles, w, h)
-        if urgent_stop:
-            speech.say_urgent("traffic_stop", "멈추세요")
-            last_guidance_key = "traffic:WAIT"
-
         all_dets = deduplicate_detections(all_dets)
 
         # 엘리베이터 자체 또는 문에 붙은 안전 경고 스티커가
@@ -1665,6 +1771,30 @@ def main():
 
         state = machine.update(active + crosswalk_dets + confirmed_stairs + elevator_dets)
 
+        # 차량 기반 멈춤/건너기 안내는 횡단보도 모드에서만 작동한다.
+        # 일반 보행 모드에서는 차량이 보여도 기존 음성을 끊거나 정지 안내를 하지 않는다.
+        if state == "CROSSWALK":
+            traffic_status, urgent_stop = crosswalk_safety.update(crosswalk_vehicles, w, h)
+            speech.set_vehicle_priority(traffic_status == "WAIT")
+            if urgent_stop:
+                speech_request_started = time.perf_counter()
+                urgent_detect_to_submit_ms = (speech_request_started - inference_finished) * 1000.0
+                speech.say_urgent("traffic_stop", "멈추세요")
+                urgent_speech_call_ms = (time.perf_counter() - speech_request_started) * 1000.0
+                last_guidance_key = "traffic:WAIT"
+        else:
+            crosswalk_safety.reset()
+            traffic_status, urgent_stop = "CLEAR", False
+            speech.set_vehicle_priority(False)
+
+        # 자동/수동 횡단보도 모드에서는 교통 전용 프롬프트로 전환한다.
+        # 전체 프롬프트 복귀도 모드 전환 시에만 수행한다.
+        desired_prompt_mode = "TRAFFIC" if state == "CROSSWALK" else "GENERAL"
+        if desired_prompt_mode != active_prompt_mode:
+            model.set_classes(TRAFFIC_PROMPTS if desired_prompt_mode == "TRAFFIC" else PROMPTS)
+            active_prompt_mode = desired_prompt_mode
+            print(f"추론 프롬프트 모드: {active_prompt_mode} ({INFERENCE_SIZE}px)")
+
         # ----------------------------------------------------
         # 최우선 정지 게이트: 신규 차량 검출 시 다른 안내를 중단하고 즉시 "멈추세요".
         # 횡단보도 상태뿐 아니라 일반 보행 모드에서도 동일하게 적용한다.
@@ -1716,11 +1846,22 @@ def main():
                 if is_walk_obstacle(d)
                 and (d[0] not in DOOR_LABELS or d in confirmed_doors)
             ]
+            # ROI 안에 안내 후보가 없더라도 화면에서 유효하게 인식된 장애물을
+            # 무음으로 버리지 않는다. ROI 후보가 있으면 기존처럼 그 대상을 우선한다.
+            if not obstacle_candidates:
+                obstacle_candidates = [
+                    d for d in filtered_for_guidance
+                    if is_walk_obstacle(d)
+                    and valid_geometry(d, w, h)
+                    and (d[0] not in DOOR_LABELS or d in confirmed_doors)
+                ]
             primary = target_selector.update(obstacle_candidates, w, h)
 
             if primary is not None:
                 guidance_key = f"obstacle:{primary[0]}:{zone(primary[2], primary[4], w)}"
                 text = guidance_for_detection(primary, w)
+                if guidance_key != last_guidance_key:
+                    print(f"[음성 안내 요청] {text}")
                 speech.say(guidance_key, text, force=(guidance_key != last_guidance_key))
                 last_guidance_key = guidance_key
             else:
@@ -1817,6 +1958,40 @@ def main():
             machine.set_forced("STAIRS")
         elif key == ord("4"):
             machine.set_forced("CROSSWALK")
+
+        loop_finished = time.perf_counter()
+        if PROFILE_TIMING:
+            profile_samples.append({
+                "capture": (capture_finished - frame_started) * 1000.0,
+                "preprocess": (preprocess_finished - capture_finished) * 1000.0,
+                "inference": (inference_finished - inference_started) * 1000.0,
+                "frame": (loop_finished - frame_started) * 1000.0,
+                "detect_to_stop": urgent_detect_to_submit_ms,
+                "speech_call": urgent_speech_call_ms,
+            })
+            now_profile = time.monotonic()
+            if now_profile - last_profile_log >= PROFILE_INTERVAL_SECONDS and profile_samples:
+                def avg_ms(key):
+                    values = [sample[key] for sample in profile_samples if sample[key] is not None]
+                    return (sum(values) / len(values)) if values else None
+
+                urgent_count = sum(sample["detect_to_stop"] is not None for sample in profile_samples)
+                detect_to_stop = avg_ms("detect_to_stop")
+                speech_call = avg_ms("speech_call")
+                urgent_summary = (
+                    f"차량감지→음성요청={detect_to_stop:.1f}ms | 음성요청처리={speech_call:.1f}ms"
+                    if detect_to_stop is not None else "차량 긴급 이벤트 없음"
+                )
+                print(
+                    "[성능 평균 최근 {}프레임] 캡처대기={:.1f}ms | 전처리={:.1f}ms | "
+                    "YOLO추론={:.1f}ms | 전체루프={:.1f}ms | 긴급횟수={} | {}".format(
+                        len(profile_samples), avg_ms("capture"), avg_ms("preprocess"),
+                        avg_ms("inference"), avg_ms("frame"), urgent_count, urgent_summary
+                    )
+                )
+                profile_samples.clear()
+                last_profile_log = now_profile
+
 
     door_ocr.close()
     cap.release()
