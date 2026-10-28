@@ -5,6 +5,8 @@ import queue
 import shutil
 import subprocess
 import warnings
+import wave
+import hashlib
 from pathlib import Path
 from collections import deque
 
@@ -50,16 +52,16 @@ IMU_BAUDRATE = 115200
 # 1차 추론은 낮은 threshold로 후보를 확보한 뒤, 아래 후처리에서
 # 클래스별 기준과 기하학 기준을 적용한다.
 CONFIDENCE = 0.20
-YOLO_INFERENCE_CONFIDENCE = 0.08  # 멀리 있는 작은 차량 후보를 확보한 뒤 클래스별 필터링
+YOLO_INFERENCE_CONFIDENCE = float(os.getenv("WALKING_ASSISTANT_YOLO_CONF", "0.12"))  # 후보 수를 줄여 CPU 후처리 부담 완화
 NMS_IOU = 0.40
-# 속도와 작은 객체 인식의 균형을 위해 512로 시작한다. 환경변수로 조정할 수 있다.
-INFERENCE_SIZE = int(os.getenv("WALKING_ASSISTANT_INFERENCE_SIZE", "512"))
-PROFILE_TIMING = os.getenv("WALKING_ASSISTANT_PROFILE", "0").strip().lower() not in {"0", "false", "no"}
+# 라즈베리파이 CPU 속도 우선 기본값. 작은 물체/먼 거리 인식은 약해질 수 있다.
+INFERENCE_SIZE = int(os.getenv("WALKING_ASSISTANT_INFERENCE_SIZE", "320"))
+PROFILE_TIMING = os.getenv("WALKING_ASSISTANT_PROFILE", "1").strip().lower() not in {"0", "false", "no"}
 PROFILE_INTERVAL_SECONDS = 5.0
 # CUDA 비동기 추론의 실제 시간을 재려면 1로 설정(측정 중 동기화 오버헤드가 생길 수 있음).
 PROFILE_CUDA_SYNC = os.getenv("WALKING_ASSISTANT_PROFILE_CUDA_SYNC", "0").strip().lower() in {"1", "true", "yes"}
 STATE_CONFIRM_FRAMES = 4
-AUTO_CLAHE = True
+AUTO_CLAHE = os.getenv("WALKING_ASSISTANT_AUTO_CLAHE", "0").strip().lower() in {"1", "true", "yes"}
 SPEECH_COOLDOWN = 0.22
 URGENT_SPEECH_COOLDOWN = 0.12
 
@@ -366,89 +368,184 @@ class OptionalIMU:
 
 
 class Speech:
-    """터미널 텍스트 출력 + Edge neural TTS, 미설치/실패 시 eSpeak 대체."""
+    """오프라인 한국어 Piper TTS를 상주 로드하고, 없으면 로컬 eSpeak로 대체한다."""
 
     def __init__(self):
         self.last_key = None
         self.last_submit_time = 0.0
         self.vehicle_priority = False
-        self.jobs = queue.Queue(maxsize=5)
+        # 대기 안내를 쌓아 오래된 음성이 뒤늦게 나오는 현상을 막는다.
+        self.jobs = queue.Queue(maxsize=1)
         self.stopping = threading.Event()
         self.process_lock = threading.Lock()
-        self.current_process = None
+        self.active_processes = set()
         self.worker = None
-
-        self.edge_tts = shutil.which("edge-tts")
-        self.player = shutil.which("mpg123") or shutil.which("ffplay") or shutil.which("mpv")
+        self.piper_voice = None
+        self.aplay = shutil.which("aplay")
+        # Raspberry Pi의 ALSA default 장치가 잘못 선택되는 경우, 환경변수로 명시 지정 가능.
+        self.alsa_device = os.getenv("WALKING_ASSISTANT_ALSA_DEVICE", "plughw:2,0")
         self.espeak = shutil.which("espeak-ng") or shutil.which("espeak")
-        self.voice = os.getenv("WALKING_ASSISTANT_VOICE", "ko-KR-SunHiNeural")
-        self.edge_rate = os.getenv("WALKING_ASSISTANT_EDGE_RATE", "+10%")
-        self.speed = os.getenv("WALKING_ASSISTANT_VOICE_SPEED", "155")
-        cache_root = Path(os.getenv("WALKING_ASSISTANT_TTS_CACHE", str(Path.home() / ".cache" / "walking_assistant_tts")))
-        cache_root.mkdir(parents=True, exist_ok=True)
-        self.cache_dir = cache_root
+        default_model = Path(__file__).resolve().parent / "voices" / "ko_KR-kss-medium.onnx"
+        self.piper_model = Path(os.getenv("WALKING_ASSISTANT_PIPER_MODEL", str(default_model))).expanduser()
+        self.cache_dir = Path(os.getenv(
+            "WALKING_ASSISTANT_AUDIO_CACHE",
+            str(Path(__file__).resolve().parent / "audio_cache")
+        )).expanduser()
 
-        if self.edge_tts and self.player:
-            self.engine = "edge"
-            print(f"음성 출력: Edge 한국어 신경망 음성 ({self.voice}), 온라인 합성·캐시 재생", flush=True)
-        elif self.espeak:
-            self.engine = "espeak"
-            self.voice = os.getenv("WALKING_ASSISTANT_ESPEAK_VOICE", "ko")
-            print("음성 출력: eSpeak (Edge TTS/오디오 플레이어 미설치 시 대체)", flush=True)
-        else:
-            self.engine = None
-            print("음성 출력: 비활성화 (edge-tts와 mpg123 또는 espeak-ng 설치 필요)", flush=True)
+        if self.aplay and self.piper_model.is_file():
+            try:
+                from piper import PiperVoice
+                print("오프라인 한국어 Piper 음성 모델 로딩 중...", flush=True)
+                self.piper_voice = PiperVoice.load(str(self.piper_model))
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+                # Piper/ONNX의 첫 추론 초기화 비용을 시작 단계에서 미리 지불한다.
+                next(iter(self.piper_voice.synthesize("음성 안내 준비")), None)
+                # 안전 문구를 미리 음성파일로 만들어, 첫 위험 안내부터 즉시 재생한다.
+                for phrase in ("멈추세요", "건너세요", "횡단보도를 가운데로 맞춰주세요"):
+                    try:
+                        self._cache_piper_clip(phrase)
+                    except Exception as warm_exc:
+                        print(f"안내 문구 사전 준비 건너뜀: {warm_exc}", flush=True)
+                print(f"음성 출력: Piper 한국어 로컬 음성 준비 완료 (ALSA={self.alsa_device}, 안전문구 캐시, 인터넷 불필요)", flush=True)
+            except Exception as exc:
+                print(f"Piper 초기화 실패: {exc}", flush=True)
+        elif not self.piper_model.is_file():
+            print(f"Piper 모델 파일이 없습니다: {self.piper_model}", flush=True)
+        elif not self.aplay:
+            print("aplay가 없습니다. 'sudo apt install alsa-utils'를 설치하세요.", flush=True)
 
-        if self.engine:
+        if self.piper_voice is None and self.espeak:
+            print("음성 출력: 로컬 eSpeak 대체 음성 (Piper 음성보다 기계음이 큼)", flush=True)
+        elif self.piper_voice is None:
+            print("음성 출력 비활성화: Piper 모델 또는 eSpeak가 필요합니다.", flush=True)
+
+        if self.piper_voice is not None or self.espeak:
             self.worker = threading.Thread(target=self._audio_worker, name="speech-audio", daemon=True)
             self.worker.start()
 
-    def _run_tracked(self, command):
-        proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    def _cache_path_for_text(self, text):
+        digest = hashlib.sha256(("ko_KR-kss-medium\0" + text).encode("utf-8")).hexdigest()
+        return self.cache_dir / f"{digest}.wav"
+
+    def _cache_piper_clip(self, text):
+        cache_path = self._cache_path_for_text(text)
+        if cache_path.is_file() and cache_path.stat().st_size > 44:
+            return cache_path
+        chunks = iter(self.piper_voice.synthesize(text))
+        first = next(chunks, None)
+        if first is None:
+            raise RuntimeError("Piper가 음성 데이터를 반환하지 않았습니다.")
+        temp_path = cache_path.with_suffix(".tmp.wav")
+        with wave.open(str(temp_path), "wb") as wav_out:
+            wav_out.setnchannels(first.sample_channels)
+            wav_out.setsampwidth(first.sample_width)
+            wav_out.setframerate(first.sample_rate)
+            wav_out.writeframes(first.audio_int16_bytes)
+            for chunk in chunks:
+                wav_out.writeframes(chunk.audio_int16_bytes)
+        temp_path.replace(cache_path)
+        return cache_path
+
+    def _play_file(self, path):
+        proc = subprocess.Popen(
+            [self.aplay, "-q", "-D", self.alsa_device, str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
         with self.process_lock:
-            self.current_process = proc
+            self.active_processes.add(proc)
         try:
-            return proc.wait()
+            return_code = proc.wait()
+            error_text = proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr else ""
+            if return_code != 0:
+                raise RuntimeError(f"aplay 실패 (장치={self.alsa_device}): {error_text or return_code}")
         finally:
             with self.process_lock:
-                if self.current_process is proc:
-                    self.current_process = None
+                self.active_processes.discard(proc)
 
-    def _play_audio(self, path):
-        if self.player.endswith("ffplay"):
-            command = [self.player, "-nodisp", "-autoexit", "-loglevel", "quiet", str(path)]
-        elif self.player.endswith("mpv"):
-            command = [self.player, "--no-video", "--really-quiet", str(path)]
-        else:
-            command = [self.player, "-q", str(path)]
-        self._run_tracked(command)
+    def _play_piper(self, text):
+        cache_path = self._cache_path_for_text(text)
+        if cache_path.is_file() and cache_path.stat().st_size > 44:
+            self._play_file(cache_path)
+            return
 
-    def _speak_edge(self, text):
-        import hashlib
-        cache_path = self.cache_dir / (hashlib.sha256((self.voice + "\0" + text).encode("utf-8")).hexdigest() + ".mp3")
-        if not cache_path.is_file():
-            temp_path = cache_path.with_suffix(".tmp.mp3")
-            result = self._run_tracked([
-                self.edge_tts, "--voice", self.voice, "--rate", self.edge_rate,
-                "--text", text, "--write-media", str(temp_path)
-            ])
-            if result != 0 or not temp_path.is_file() or temp_path.stat().st_size == 0:
+
+        # 새 문구는 Piper가 합성하는 동안 즉시 ALSA로 보내고, 동시에 다음 재생을 위해 캐시한다.
+        chunks = iter(self.piper_voice.synthesize(text))
+        first = next(chunks, None)
+        if first is None:
+            return
+        if first.sample_width != 2:
+            raise RuntimeError(f"지원하지 않는 Piper 오디오 샘플 폭: {first.sample_width}")
+        proc = subprocess.Popen(
+            [self.aplay, "-q", "-D", self.alsa_device, "-t", "raw", "-f", "S16_LE",
+             "-r", str(first.sample_rate), "-c", str(first.sample_channels)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        with self.process_lock:
+            self.active_processes.add(proc)
+        temp_path = cache_path.with_suffix(".tmp.wav")
+        cache_writer = wave.open(str(temp_path), "wb")
+        cache_writer.setnchannels(first.sample_channels)
+        cache_writer.setsampwidth(first.sample_width)
+        cache_writer.setframerate(first.sample_rate)
+        try:
+            assert proc.stdin is not None
+            try:
+                proc.stdin.write(first.audio_int16_bytes)
+                proc.stdin.flush()
+                cache_writer.writeframes(first.audio_int16_bytes)
+                for chunk in chunks:
+                    cache_writer.writeframes(chunk.audio_int16_bytes)
+                    if self.stopping.is_set() or proc.poll() is not None:
+                        continue
+                    proc.stdin.write(chunk.audio_int16_bytes)
+                    proc.stdin.flush()
+            except BrokenPipeError:
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except BrokenPipeError:
+                    pass
+            cache_writer.close()
+            return_code = proc.wait()
+            error_text = proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr else ""
+            if return_code != 0:
                 temp_path.unlink(missing_ok=True)
-                raise RuntimeError("Edge TTS 온라인 음성 합성에 실패했습니다.")
+                raise RuntimeError(f"aplay 실패 (장치={self.alsa_device}): {error_text or return_code}")
             temp_path.replace(cache_path)
-        if not self.stopping.is_set():
-            self._play_audio(cache_path)
+        finally:
+            if not cache_writer.closed:
+                cache_writer.close()
+            with self.process_lock:
+                self.active_processes.discard(proc)
+
+    def _run_espeak(self, text):
+        proc = subprocess.Popen(
+            [self.espeak, "-v", os.getenv("WALKING_ASSISTANT_ESPEAK_VOICE", "ko"),
+             "-s", os.getenv("WALKING_ASSISTANT_VOICE_SPEED", "165"), "--", text],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        with self.process_lock:
+            self.active_processes.add(proc)
+        try:
+            proc.wait()
+        finally:
+            with self.process_lock:
+                self.active_processes.discard(proc)
 
     def _speak(self, text):
-        if self.engine == "edge":
-            try:
-                self._speak_edge(text)
-                return
-            except Exception as exc:
-                print(f"Edge TTS 사용 실패, 로컬 음성으로 대체: {exc}", flush=True)
-        if self.espeak and not self.stopping.is_set():
-            self._run_tracked([self.espeak, "-v", self.voice if self.engine == "espeak" else "ko",
-                               "-s", str(self.speed), "--", text])
+        try:
+            if self.piper_voice is not None:
+                self._play_piper(text)
+            elif self.espeak:
+                self._run_espeak(text)
+        except Exception as exc:
+            print(f"오프라인 음성 출력 오류: {exc}", flush=True)
 
     def _audio_worker(self):
         while not self.stopping.is_set():
@@ -458,35 +555,30 @@ class Speech:
                 continue
             if text is None:
                 break
-            try:
-                self._speak(text)
-            except Exception as exc:
-                print(f"음성 출력 오류: {exc}", flush=True)
+            self._speak(text)
 
     def _queue_audio(self, text, urgent=False):
-        if not self.engine or self.stopping.is_set():
+        if (self.piper_voice is None and not self.espeak) or self.stopping.is_set():
             return
         if urgent:
             with self.process_lock:
-                proc = self.current_process
-                if proc is not None and proc.poll() is None:
-                    proc.terminate()
+                for proc in tuple(self.active_processes):
+                    if proc.poll() is None:
+                        proc.terminate()
             while True:
                 try:
                     self.jobs.get_nowait()
                 except queue.Empty:
                     break
+        # 아직 재생을 시작하지 않은 오래된 안내는 버리고 최신 안내만 남긴다.
+        try:
+            self.jobs.get_nowait()
+        except queue.Empty:
+            pass
         try:
             self.jobs.put_nowait(text)
         except queue.Full:
-            try:
-                self.jobs.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                self.jobs.put_nowait(text)
-            except queue.Full:
-                pass
+            pass
 
     def set_vehicle_priority(self, active):
         self.vehicle_priority = bool(active)
@@ -510,9 +602,9 @@ class Speech:
 
     def cancel(self):
         with self.process_lock:
-            proc = self.current_process
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
+            for proc in tuple(self.active_processes):
+                if proc.poll() is None:
+                    proc.terminate()
 
     def close(self):
         self.stopping.set()
@@ -1585,19 +1677,31 @@ def main():
     print("YOLOE 모델 로딩 중... (Raspberry Pi 터미널 모드)", flush=True)
     print(f"카메라: {CAMERA_INDEX} | 추론 크기: {INFERENCE_SIZE} | 단계별 시간 측정: {'ON' if PROFILE_TIMING else 'OFF'}", flush=True)
     try:
+        cv2.setNumThreads(1)
+    except Exception:
+        pass
+    try:
         import torch
-        torch.set_num_threads(max(1, int(os.getenv("WALKING_ASSISTANT_CPU_THREADS", "3"))))
+        torch.set_num_threads(max(1, int(os.getenv("WALKING_ASSISTANT_CPU_THREADS", "2"))))
     except Exception as exc:
         print(f"PyTorch CPU 스레드 설정을 건너뜁니다: {exc}")
     model_load_started = time.monotonic()
     model = YOLOE(MODEL_PATH)
     model.set_classes(PROMPTS)
+    warmup_started = time.monotonic()
+    try:
+        warmup = np.zeros((INFERENCE_SIZE, INFERENCE_SIZE, 3), dtype=np.uint8)
+        model.predict(warmup, conf=YOLO_INFERENCE_CONFIDENCE, imgsz=INFERENCE_SIZE,
+                      max_det=1, verbose=False)
+        print(f"추론 워밍업 완료: {time.monotonic() - warmup_started:.2f}초", flush=True)
+    except Exception as exc:
+        print(f"추론 워밍업 생략: {exc}", flush=True)
     print(f"모델 준비 완료: {time.monotonic() - model_load_started:.1f}초", flush=True)
     active_prompt_mode = "GENERAL"
 
     raw_cap = cv2.VideoCapture(CAMERA_INDEX)
-    raw_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    raw_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    raw_cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(os.getenv("WALKING_ASSISTANT_CAMERA_WIDTH", "640")))
+    raw_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(os.getenv("WALKING_ASSISTANT_CAMERA_HEIGHT", "480")))
     # 드라이버 내부 버퍼도 가능한 한 작게 설정해 오래된 프레임 누적을 줄인다.
     raw_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
@@ -1646,7 +1750,7 @@ def main():
                 conf=YOLO_INFERENCE_CONFIDENCE,
                 iou=NMS_IOU,
                 imgsz=INFERENCE_SIZE,
-                max_det=30,
+                max_det=int(os.getenv("WALKING_ASSISTANT_MAX_DET", "15")),
                 verbose=False,
             )[0]
             sync_cuda_for_profile(model)
