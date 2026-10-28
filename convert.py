@@ -1,36 +1,56 @@
-from ultralytics import YOLOWorld
+#!/usr/bin/env python3
+"""YOLOE-26n segmentation 가중치와 텍스트 인코더를 한 번 받아 준비합니다.
 
-model = YOLOWorld('yolov8s-worldv2.pt')
+실행 예:
+  source ~/yolo-env/bin/activate
+  python download_yoloe_model.py
+"""
+from pathlib import Path
+import os
+import shutil
+import sys
 
-# 💡 오리지널의 직관적인 명칭 구조를 참고하되, 가구와 문의 경계를 확실히 가른 최적화 프롬프트
-custom_classes = [
-    # --- 문 영역 ---
-    "a room door with a handle", 
-    "an entrance door", 
-    "a glass door with frame",  # 유리문이 옷장으로 튀는 것을 막기 위한 프레임 강조
-    
-    # --- 도로 및 계단 영역 ---
-    "concrete curb on the street", "stairs leading downwards", "stairs leading upwards", 
-    "wheelchair ramp or slope", "stair",
-    
-    # --- 이동수단 및 사람 ---
-    "electric kick scooter", "person", "bicycle", "motorcycle", 
-    
-    # --- 가구 및 소품 ---
-    "sink", "stop sign", "bench", "chair", "potted plant", 
-    "tv", "laptop", "cell phone", "microwave", "bed", "a dining table", "a cardboard box",
-    "wall", "window", "clothes hanger rack",
-    
-    # --- 실외 장애물 ---
-    "bollard", "traffic cone", "utility pole", "water puddle", "tree",
-    "a passenger car", "a large passenger bus", "a cargo truck",
-    "a kitchen refrigerator", 
-    
-    # --- 💥 옷장 / 선반 영역 오탐 방지 종결 프롬프트 ---
-    "a storage shelf with open racks", # 앞면이 뚫린 격자 구조 강조 (옷장과 분리)
-    "a wooden wardrobe cabinet for clothes storage" # 의류 보관용 거대 가구 속성 강조 (문과 분리)
-]
+MODEL_NAME = "yoloe-26n-seg.pt"
+PROMPT_WARMUP = ["person"]
+HERE = Path(__file__).resolve().parent
 
-model.set_classes(custom_classes)
-model.save('fixed_model.pt')
-print("🎉 [프롬프트 밸런스 튜닝 완료] 'fixed_model.pt' 빌드가 완료되었습니다.")
+
+def main():
+    # YOLOE text encoder는 현재 작업 폴더에 저장되므로 스크립트 위치를 사용합니다.
+    os.chdir(HERE)
+    try:
+        from ultralytics import YOLOE
+    except ImportError:
+        print("Ultralytics가 없습니다. 활성화된 가상환경에 설치하세요: pip install -U 'ultralytics>=8.4.0'", file=sys.stderr)
+        return 2
+
+    target = HERE / MODEL_NAME
+    print(f"모델 확인/다운로드: {MODEL_NAME}", flush=True)
+    try:
+        model = YOLOE(MODEL_NAME)  # 없으면 Ultralytics가 공식 배포 위치에서 자동 다운로드
+        source = Path(getattr(model, "ckpt_path", MODEL_NAME)).expanduser().resolve()
+        if source.is_file() and source != target.resolve():
+            shutil.copy2(source, target)
+        elif not target.is_file() and source.is_file():
+            shutil.copy2(source, target)
+        if not target.is_file():
+            print(f"모델이 준비되지 않았습니다. 확인 경로: {source}", file=sys.stderr)
+            return 1
+        print(f"모델 준비 완료: {target} ({target.stat().st_size / (1024 * 1024):.1f} MiB)", flush=True)
+
+        print("YOLOE 텍스트 인코더 준비 중 (최초 실행 시 약 254 MB 다운로드될 수 있습니다)...", flush=True)
+        model.set_classes(PROMPT_WARMUP)
+        encoder = HERE / "mobileclip2_b.ts"
+        if encoder.is_file():
+            print(f"텍스트 인코더 준비 완료: {encoder} ({encoder.stat().st_size / (1024 * 1024):.1f} MiB)", flush=True)
+        else:
+            print("텍스트 인코더가 준비됐는지 확인하세요. YOLOE 버전에 따라 저장 위치/이름이 다를 수 있습니다.", flush=True)
+        print("완료. 보행 보조 프로그램에서도 이 폴더를 작업 디렉터리로 사용하세요.", flush=True)
+        return 0
+    except Exception as exc:
+        print(f"다운로드/초기화 실패: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
