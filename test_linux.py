@@ -5,6 +5,7 @@ import queue
 import shutil
 import subprocess
 import warnings
+from pathlib import Path
 from collections import deque
 
 try:
@@ -365,26 +366,89 @@ class OptionalIMU:
 
 
 class Speech:
-    """터미널 텍스트를 출력하고 espeak-ng로 한국어 음성을 비동기 재생한다."""
+    """터미널 텍스트 출력 + Edge neural TTS, 미설치/실패 시 eSpeak 대체."""
 
     def __init__(self):
         self.last_key = None
         self.last_submit_time = 0.0
         self.vehicle_priority = False
-        self.engine = shutil.which("espeak-ng") or shutil.which("espeak")
-        self.voice = os.getenv("WALKING_ASSISTANT_VOICE", "ko")
-        self.speed = os.getenv("WALKING_ASSISTANT_VOICE_SPEED", "155")
         self.jobs = queue.Queue(maxsize=5)
         self.stopping = threading.Event()
         self.process_lock = threading.Lock()
         self.current_process = None
         self.worker = None
+
+        self.edge_tts = shutil.which("edge-tts")
+        self.player = shutil.which("mpg123") or shutil.which("ffplay") or shutil.which("mpv")
+        self.espeak = shutil.which("espeak-ng") or shutil.which("espeak")
+        self.voice = os.getenv("WALKING_ASSISTANT_VOICE", "ko-KR-SunHiNeural")
+        self.edge_rate = os.getenv("WALKING_ASSISTANT_EDGE_RATE", "+10%")
+        self.speed = os.getenv("WALKING_ASSISTANT_VOICE_SPEED", "155")
+        cache_root = Path(os.getenv("WALKING_ASSISTANT_TTS_CACHE", str(Path.home() / ".cache" / "walking_assistant_tts")))
+        cache_root.mkdir(parents=True, exist_ok=True)
+        self.cache_dir = cache_root
+
+        if self.edge_tts and self.player:
+            self.engine = "edge"
+            print(f"음성 출력: Edge 한국어 신경망 음성 ({self.voice}), 온라인 합성·캐시 재생", flush=True)
+        elif self.espeak:
+            self.engine = "espeak"
+            self.voice = os.getenv("WALKING_ASSISTANT_ESPEAK_VOICE", "ko")
+            print("음성 출력: eSpeak (Edge TTS/오디오 플레이어 미설치 시 대체)", flush=True)
+        else:
+            self.engine = None
+            print("음성 출력: 비활성화 (edge-tts와 mpg123 또는 espeak-ng 설치 필요)", flush=True)
+
         if self.engine:
             self.worker = threading.Thread(target=self._audio_worker, name="speech-audio", daemon=True)
             self.worker.start()
-            print(f"음성 출력: 활성화 ({self.engine}, 음성={self.voice})", flush=True)
+
+    def _run_tracked(self, command):
+        proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with self.process_lock:
+            self.current_process = proc
+        try:
+            return proc.wait()
+        finally:
+            with self.process_lock:
+                if self.current_process is proc:
+                    self.current_process = None
+
+    def _play_audio(self, path):
+        if self.player.endswith("ffplay"):
+            command = [self.player, "-nodisp", "-autoexit", "-loglevel", "quiet", str(path)]
+        elif self.player.endswith("mpv"):
+            command = [self.player, "--no-video", "--really-quiet", str(path)]
         else:
-            print("음성 출력: 비활성화 (espeak-ng 설치 필요)", flush=True)
+            command = [self.player, "-q", str(path)]
+        self._run_tracked(command)
+
+    def _speak_edge(self, text):
+        import hashlib
+        cache_path = self.cache_dir / (hashlib.sha256((self.voice + "\0" + text).encode("utf-8")).hexdigest() + ".mp3")
+        if not cache_path.is_file():
+            temp_path = cache_path.with_suffix(".tmp.mp3")
+            result = self._run_tracked([
+                self.edge_tts, "--voice", self.voice, "--rate", self.edge_rate,
+                "--text", text, "--write-media", str(temp_path)
+            ])
+            if result != 0 or not temp_path.is_file() or temp_path.stat().st_size == 0:
+                temp_path.unlink(missing_ok=True)
+                raise RuntimeError("Edge TTS 온라인 음성 합성에 실패했습니다.")
+            temp_path.replace(cache_path)
+        if not self.stopping.is_set():
+            self._play_audio(cache_path)
+
+    def _speak(self, text):
+        if self.engine == "edge":
+            try:
+                self._speak_edge(text)
+                return
+            except Exception as exc:
+                print(f"Edge TTS 사용 실패, 로컬 음성으로 대체: {exc}", flush=True)
+        if self.espeak and not self.stopping.is_set():
+            self._run_tracked([self.espeak, "-v", self.voice if self.engine == "espeak" else "ko",
+                               "-s", str(self.speed), "--", text])
 
     def _audio_worker(self):
         while not self.stopping.is_set():
@@ -395,19 +459,9 @@ class Speech:
             if text is None:
                 break
             try:
-                proc = subprocess.Popen(
-                    [self.engine, "-v", self.voice, "-s", str(self.speed), "--", text],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                with self.process_lock:
-                    self.current_process = proc
-                proc.wait()
+                self._speak(text)
             except Exception as exc:
                 print(f"음성 출력 오류: {exc}", flush=True)
-            finally:
-                with self.process_lock:
-                    self.current_process = None
 
     def _queue_audio(self, text, urgent=False):
         if not self.engine or self.stopping.is_set():
@@ -425,7 +479,6 @@ class Speech:
         try:
             self.jobs.put_nowait(text)
         except queue.Full:
-            # 오래된 안내보다 최신 안내를 우선 전달한다.
             try:
                 self.jobs.get_nowait()
             except queue.Empty:
