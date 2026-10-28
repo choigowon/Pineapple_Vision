@@ -2,6 +2,9 @@ import os
 import time
 import threading
 import queue
+import shutil
+import subprocess
+import warnings
 from collections import deque
 
 try:
@@ -11,6 +14,14 @@ except ImportError:
 
 import cv2
 import numpy as np
+# torch.jit.load 경고는 Ultralytics 내부 호출에서 나오며, 모델 로딩 자체의 오류는 아니다.
+# 해당 FutureWarning만 숨기고 다른 경고는 그대로 둔다.
+warnings.filterwarnings(
+    "ignore",
+    message=r"`torch\.jit\.load` is deprecated.*",
+    category=FutureWarning,
+)
+
 from ultralytics import YOLOE
 
 try:
@@ -354,13 +365,75 @@ class OptionalIMU:
 
 
 class Speech:
-    """음성 엔진 대신 안내 결과를 터미널에만 출력한다."""
+    """터미널 텍스트를 출력하고 espeak-ng로 한국어 음성을 비동기 재생한다."""
 
     def __init__(self):
         self.last_key = None
         self.last_submit_time = 0.0
         self.vehicle_priority = False
-        print("출력 모드: 터미널 텍스트 전용 (음성 출력 비활성화)", flush=True)
+        self.engine = shutil.which("espeak-ng") or shutil.which("espeak")
+        self.voice = os.getenv("WALKING_ASSISTANT_VOICE", "ko")
+        self.speed = os.getenv("WALKING_ASSISTANT_VOICE_SPEED", "155")
+        self.jobs = queue.Queue(maxsize=5)
+        self.stopping = threading.Event()
+        self.process_lock = threading.Lock()
+        self.current_process = None
+        self.worker = None
+        if self.engine:
+            self.worker = threading.Thread(target=self._audio_worker, name="speech-audio", daemon=True)
+            self.worker.start()
+            print(f"음성 출력: 활성화 ({self.engine}, 음성={self.voice})", flush=True)
+        else:
+            print("음성 출력: 비활성화 (espeak-ng 설치 필요)", flush=True)
+
+    def _audio_worker(self):
+        while not self.stopping.is_set():
+            try:
+                text = self.jobs.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if text is None:
+                break
+            try:
+                proc = subprocess.Popen(
+                    [self.engine, "-v", self.voice, "-s", str(self.speed), "--", text],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                with self.process_lock:
+                    self.current_process = proc
+                proc.wait()
+            except Exception as exc:
+                print(f"음성 출력 오류: {exc}", flush=True)
+            finally:
+                with self.process_lock:
+                    self.current_process = None
+
+    def _queue_audio(self, text, urgent=False):
+        if not self.engine or self.stopping.is_set():
+            return
+        if urgent:
+            with self.process_lock:
+                proc = self.current_process
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+            while True:
+                try:
+                    self.jobs.get_nowait()
+                except queue.Empty:
+                    break
+        try:
+            self.jobs.put_nowait(text)
+        except queue.Full:
+            # 오래된 안내보다 최신 안내를 우선 전달한다.
+            try:
+                self.jobs.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.jobs.put_nowait(text)
+            except queue.Full:
+                pass
 
     def set_vehicle_priority(self, active):
         self.vehicle_priority = bool(active)
@@ -374,14 +447,25 @@ class Speech:
         self.last_key = key
         self.last_submit_time = now
         print(f"[결과] {text}", flush=True)
+        self._queue_audio(text)
 
     def say_urgent(self, key, text):
         self.last_key = key
         self.last_submit_time = time.time()
         print(f"[긴급 결과] {text}", flush=True)
+        self._queue_audio(text, urgent=True)
 
     def cancel(self):
-        pass
+        with self.process_lock:
+            proc = self.current_process
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+
+    def close(self):
+        self.stopping.set()
+        self.cancel()
+        if self.worker is not None:
+            self.worker.join(timeout=1.0)
 
     def say_crosswalk_status(self, status, force=True):
         if status in {"WAIT", "UNKNOWN"}:
@@ -1452,8 +1536,10 @@ def main():
         torch.set_num_threads(max(1, int(os.getenv("WALKING_ASSISTANT_CPU_THREADS", "3"))))
     except Exception as exc:
         print(f"PyTorch CPU 스레드 설정을 건너뜁니다: {exc}")
+    model_load_started = time.monotonic()
     model = YOLOE(MODEL_PATH)
     model.set_classes(PROMPTS)
+    print(f"모델 준비 완료: {time.monotonic() - model_load_started:.1f}초", flush=True)
     active_prompt_mode = "GENERAL"
 
     raw_cap = cv2.VideoCapture(CAMERA_INDEX)
@@ -1731,6 +1817,7 @@ def main():
 
     finally:
         door_ocr.close()
+        speech.close()
         cap.release()
 
 
