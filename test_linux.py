@@ -52,9 +52,9 @@ IMU_BAUDRATE = 115200
 # 1차 추론은 낮은 threshold로 후보를 확보한 뒤, 아래 후처리에서
 # 클래스별 기준과 기하학 기준을 적용한다.
 CONFIDENCE = 0.20
-YOLO_INFERENCE_CONFIDENCE = float(os.getenv("WALKING_ASSISTANT_YOLO_CONF", "0.12"))  # 후보 수를 줄여 CPU 후처리 부담 완화
+YOLO_INFERENCE_CONFIDENCE = float(os.getenv("WALKING_ASSISTANT_YOLO_CONF", "0.12"))  # 속도와 후보 품질 절충
 NMS_IOU = 0.40
-# 라즈베리파이 CPU 속도 우선 기본값. 작은 물체/먼 거리 인식은 약해질 수 있다.
+# 빠른 반응을 유지하고 문 감지는 문 전용 프롬프트/기준으로 보완한다.
 INFERENCE_SIZE = int(os.getenv("WALKING_ASSISTANT_INFERENCE_SIZE", "320"))
 PROFILE_TIMING = os.getenv("WALKING_ASSISTANT_PROFILE", "1").strip().lower() not in {"0", "false", "no"}
 PROFILE_INTERVAL_SECONDS = 5.0
@@ -169,18 +169,24 @@ CLASS_MIN_CONF = {
     "stairs": 0.45,
     "staircase": 0.45,
     "stair landing": 0.50,
-    "door": 0.48,
-    "sliding door": 0.42,
-    "glass sliding door": 0.32,
-    "sliding glass door": 0.30,
-    "front view of a glass sliding door": 0.28,
-    "front facing glass sliding door": 0.28,
-    "sliding glass door viewed straight on": 0.28,
-    "transparent sliding glass entrance door": 0.28,
+    # Door labels use lower thresholds; require repeated detections before announcing.
+    "door": 0.24,
+    "entrance door": 0.24,
+    "interior door": 0.24,
+    "wooden door": 0.24,
+    "closed door": 0.24,
+    "open door": 0.24,
+    "sliding door": 0.28,
+    "glass sliding door": 0.26,
+    "sliding glass door": 0.26,
+    "front view of a glass sliding door": 0.24,
+    "front facing glass sliding door": 0.24,
+    "sliding glass door viewed straight on": 0.24,
+    "transparent sliding glass entrance door": 0.24,
     "sliding glass door handle": 0.44,
-    "automatic door": 0.60,
-    "glass door": 0.60,
-    "hinged door": 0.50,
+    "automatic door": 0.28,
+    "glass door": 0.28,
+    "hinged door": 0.28,
     "elevator": ELEVATOR_MIN_CONF,
     "elevator safety warning sticker": ELEVATOR_STICKER_MIN_CONF,
     "do not lean on elevator door sticker": ELEVATOR_STICKER_MIN_CONF,
@@ -207,7 +213,8 @@ PROMPTS = [
     "refrigerator", "tree", CAR_PROMPT, "car", SCOOTER_PROMPT, "scooter",
     MOTORCYCLE_PROMPT, "motorcycle", "bollard", "traffic cone",
     "utility pole", "bicycle", "person", "curb", "railing", "guardrail",
-    "door", "sliding door", "glass sliding door", "sliding glass door",
+    "door", "entrance door", "interior door", "wooden door", "closed door", "open door",
+    "sliding door", "glass sliding door", "sliding glass door",
     "automatic door", "glass door", "hinged door", "door handle", "doorknob",
     "lever handle", "pull handle", "push bar", "stairs", "staircase",
     "elevator", "elevator safety warning sticker", "elevator safety notice",
@@ -222,7 +229,8 @@ TRAFFIC_PROMPTS = [
 ]
 
 DOOR_LABELS = {
-    "door", "sliding door", "glass sliding door", "sliding glass door",
+    "door", "entrance door", "interior door", "wooden door", "closed door", "open door",
+    "sliding door", "glass sliding door", "sliding glass door",
     "front view of a glass sliding door", "front facing glass sliding door",
     "sliding glass door viewed straight on", "transparent sliding glass entrance door",
     "automatic door", "glass door", "hinged door",
@@ -326,6 +334,11 @@ KOREAN_LABELS = {
     "push bar": "푸시바",
     "door push button": "문 버튼",
     "recessed door handle": "매립 손잡이",
+    "entrance door": "출입문",
+    "interior door": "실내 문",
+    "wooden door": "나무 문",
+    "closed door": "닫힌 문",
+    "open door": "열린 문",
     "front view of a glass sliding door": "유리 미닫이문",
     "front facing glass sliding door": "유리 미닫이문",
     "sliding glass door viewed straight on": "유리 미닫이문",
@@ -1750,7 +1763,7 @@ def main():
                 conf=YOLO_INFERENCE_CONFIDENCE,
                 iou=NMS_IOU,
                 imgsz=INFERENCE_SIZE,
-                max_det=int(os.getenv("WALKING_ASSISTANT_MAX_DET", "15")),
+                max_det=int(os.getenv("WALKING_ASSISTANT_MAX_DET", "20")),
                 verbose=False,
             )[0]
             sync_cuda_for_profile(model)
