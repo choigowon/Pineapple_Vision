@@ -380,6 +380,109 @@ class OptionalIMU:
                 self.parse_line(raw)
 
 
+class UltrasonicSensor:
+    """HC-SR04P (BCM GPIO23=Trig, GPIO24=Echo) 거리 측정 및 50cm 경고음."""
+
+    TRIG_PIN = 23
+    ECHO_PIN = 24
+    MAX_DISTANCE_CM = 400.0
+    WARNING_DISTANCE_CM = 50.0
+
+    def __init__(self):
+        self.gpio = None
+        self.ready = False
+        self._beep_lock = threading.Lock()
+        self._last_beep = 0.0
+        self._beep_interval = 0.65
+        self._aplay = shutil.which("aplay")
+        self._alsa_device = os.getenv("WALKING_ASSISTANT_ALSA_DEVICE", "plughw:2,0")
+        self._beep_samples = self._make_double_beep()
+        try:
+            import RPi.GPIO as GPIO
+            self.gpio = GPIO
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self.TRIG_PIN, GPIO.OUT, initial=GPIO.LOW)
+            GPIO.setup(self.ECHO_PIN, GPIO.IN)
+            time.sleep(0.05)
+            self.ready = True
+            print("초음파 센서 연결: Trig=GPIO23(물리 16), Echo=GPIO24(물리 18)", flush=True)
+        except Exception as exc:
+            print(f"초음파 센서 비활성화: {exc}", flush=True)
+
+    @staticmethod
+    def _make_double_beep():
+        # 2회의 짧은 900Hz 경고음. 기존 ALSA 출력 장치를 사용한다.
+        sample_rate = 24000
+        tone_count = int(sample_rate * 0.11)
+        silence_count = int(sample_rate * 0.08)
+        t = np.arange(tone_count, dtype=np.float32) / sample_rate
+        tone = (np.sin(2.0 * np.pi * 900.0 * t) * 0.35 * 32767).astype(np.int16)
+        silence = np.zeros(silence_count, dtype=np.int16)
+        return tone.tobytes() + silence.tobytes() + tone.tobytes()
+
+    def measure_cm(self):
+        if not self.ready or self.gpio is None:
+            return None
+        gpio = self.gpio
+        try:
+            gpio.output(self.TRIG_PIN, gpio.LOW)
+            time.sleep(0.000002)
+            gpio.output(self.TRIG_PIN, gpio.HIGH)
+            time.sleep(0.00001)
+            gpio.output(self.TRIG_PIN, gpio.LOW)
+
+            deadline = time.monotonic() + 0.03
+            while gpio.input(self.ECHO_PIN) == 0:
+                if time.monotonic() >= deadline:
+                    return self.MAX_DISTANCE_CM
+            pulse_start = time.monotonic()
+
+            deadline = pulse_start + 0.03
+            while gpio.input(self.ECHO_PIN) == 1:
+                if time.monotonic() >= deadline:
+                    return self.MAX_DISTANCE_CM
+            pulse_end = time.monotonic()
+            distance_cm = (pulse_end - pulse_start) * 34300.0 / 2.0
+            return min(self.MAX_DISTANCE_CM, max(0.0, distance_cm))
+        except Exception as exc:
+            print(f"초음파 거리 측정 오류: {exc}", flush=True)
+            return None
+
+    def _play_beep(self):
+        if not self._aplay or not self._beep_lock.acquire(blocking=False):
+            return
+        try:
+            subprocess.run(
+                [self._aplay, "-q", "-D", self._alsa_device, "-t", "raw",
+                 "-f", "S16_LE", "-r", "24000", "-c", "1"],
+                input=self._beep_samples,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2.0,
+                check=False,
+            )
+        except Exception as exc:
+            print(f"초음파 경고음 출력 오류: {exc}", flush=True)
+        finally:
+            self._beep_lock.release()
+
+    def update_warning(self, distance_cm, active):
+        if not active or distance_cm is None or distance_cm > self.WARNING_DISTANCE_CM:
+            return
+        now = time.monotonic()
+        if now - self._last_beep >= self._beep_interval:
+            self._last_beep = now
+            threading.Thread(target=self._play_beep, name="ultrasonic-beep", daemon=True).start()
+
+    def close(self):
+        if self.gpio is not None and self.ready:
+            try:
+                self.gpio.cleanup((self.TRIG_PIN, self.ECHO_PIN))
+            except Exception:
+                pass
+            self.ready = False
+
+
 class Speech:
     """오프라인 한국어 Piper TTS를 상주 로드하고, 없으면 로컬 eSpeak로 대체한다."""
 
@@ -387,6 +490,7 @@ class Speech:
         self.last_key = None
         self.last_submit_time = 0.0
         self.vehicle_priority = False
+        self.ultrasonic_suppressed = False
         # 대기 안내를 쌓아 오래된 음성이 뒤늦게 나오는 현상을 막는다.
         self.jobs = queue.Queue(maxsize=1)
         self.stopping = threading.Event()
@@ -596,8 +700,15 @@ class Speech:
     def set_vehicle_priority(self, active):
         self.vehicle_priority = bool(active)
 
+    def set_ultrasonic_suppressed(self, active):
+        self.ultrasonic_suppressed = bool(active)
+
     def say(self, key, text, force=False):
         if self.vehicle_priority and not key.startswith(("crosswalk_", "traffic_")):
+            return
+        # 일반 모드에서 센서가 400cm 이상을 읽으면 일반 결과 음성만 억제한다.
+        # 교통/횡단보도 안내는 이 필터의 영향을 받지 않는다.
+        if self.ultrasonic_suppressed and not key.startswith(("crosswalk_", "traffic_")):
             return
         now = time.time()
         if key == self.last_key and now - self.last_submit_time < 2.0:
@@ -1729,6 +1840,7 @@ def main():
 
     imu = OptionalIMU(IMU_PORT, IMU_BAUDRATE)
     speech = Speech()
+    ultrasonic = UltrasonicSensor()
     door_ocr = DoorNoticeOCR(speech)
     machine = SituationMachine()
     crosswalk_safety = CrosswalkSafety()
@@ -1851,6 +1963,19 @@ def main():
             elevator_dets = confirmed_elevators
 
             state = machine.update(active + crosswalk_dets + confirmed_stairs + elevator_dets)
+
+            # 초음파는 일반 모드에서만 사용한다. 400cm 이상(무반사/측정범위 밖 포함)은
+            # 일반 결과 음성을 억제하고, 50cm 이하는 기존 ALSA 스피커로 삐삐 경고음을 낸다.
+            # 횡단보도/차량 모드에서는 측정값을 무시하고 필터와 경고음을 모두 끈다.
+            general_mode = state != "CROSSWALK"
+            ultrasonic_distance_cm = ultrasonic.measure_cm() if general_mode else None
+            ultrasonic_far = (
+                general_mode
+                and ultrasonic_distance_cm is not None
+                and ultrasonic_distance_cm >= UltrasonicSensor.MAX_DISTANCE_CM
+            )
+            speech.set_ultrasonic_suppressed(ultrasonic_far)
+            ultrasonic.update_warning(ultrasonic_distance_cm, active=general_mode)
 
             # 차량 기반 멈춤/건너기 안내는 횡단보도 모드에서만 작동한다.
             # 일반 보행 모드에서는 차량이 보여도 기존 음성을 끊거나 정지 안내를 하지 않는다.
@@ -1987,6 +2112,7 @@ def main():
 
     finally:
         door_ocr.close()
+        ultrasonic.close()
         speech.close()
         cap.release()
 
