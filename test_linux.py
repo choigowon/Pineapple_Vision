@@ -27,12 +27,6 @@ warnings.filterwarnings(
 
 from ultralytics import YOLOE
 
-try:
-    import serial
-except ImportError:
-    serial = None
-
-
 # ============================================================
 # YOLOE 기반 상황형 보행 보조 Raspberry Pi 터미널 프로토타입
 #
@@ -46,9 +40,6 @@ except ImportError:
 
 MODEL_PATH = os.getenv("WALKING_ASSISTANT_MODEL", "yoloe-26n-seg.pt")
 CAMERA_INDEX = int(os.getenv("WALKING_ASSISTANT_CAMERA_INDEX", "0"))
-IMU_PORT = os.getenv("WALKING_ASSISTANT_IMU_PORT") or None
-IMU_BAUDRATE = 115200
-
 # 1차 추론은 낮은 threshold로 후보를 확보한 뒤, 아래 후처리에서
 # 클래스별 기준과 기하학 기준을 적용한다.
 CONFIDENCE = 0.20
@@ -56,7 +47,7 @@ YOLO_INFERENCE_CONFIDENCE = float(os.getenv("WALKING_ASSISTANT_YOLO_CONF", "0.12
 NMS_IOU = 0.40
 # 빠른 반응을 유지하고 문 감지는 문 전용 프롬프트/기준으로 보완한다.
 INFERENCE_SIZE = int(os.getenv("WALKING_ASSISTANT_INFERENCE_SIZE", "320"))
-PROFILE_TIMING = os.getenv("WALKING_ASSISTANT_PROFILE", "1").strip().lower() not in {"0", "false", "no"}
+PROFILE_TIMING = os.getenv("WALKING_ASSISTANT_PROFILE", "0").strip().lower() not in {"0", "false", "no"}
 PROFILE_INTERVAL_SECONDS = 5.0
 # CUDA 비동기 추론의 실제 시간을 재려면 1로 설정(측정 중 동기화 오버헤드가 생길 수 있음).
 PROFILE_CUDA_SYNC = os.getenv("WALKING_ASSISTANT_PROFILE_CUDA_SYNC", "0").strip().lower() in {"1", "true", "yes"}
@@ -70,17 +61,21 @@ CROSSWALK_VEHICLE_MIN_CONF = 0.16
 CROSSWALK_CAR_CONFIRM_FRAMES = 1
 CROSSWALK_CLEAR_SECONDS = 2.0
 CROSSWALK_MIN_CONF = 0.36
-CROSSWALK_ENTER_CONFIRM_SECONDS = 0.6
-CROSSWALK_EXIT_HOLD_SECONDS = 2.0
-CROSSWALK_DETECTION_GAP_SECONDS = 0.8
+CROSSWALK_ENTER_CONFIRM_SECONDS = 0.0
+CROSSWALK_EXIT_HOLD_SECONDS = 8.0
+CROSSWALK_DETECTION_GAP_SECONDS = 8.0
 # 차량 중심 추적: 검출 즉시 정지, 2~3초 안정 확인 후에만 횡단 허용
-VEHICLE_FRAME_HOLD_SECONDS = 0.70
-VEHICLE_ABSENCE_CLEAR_SECONDS = 2.0
-VEHICLE_STATIONARY_SECONDS = 2.5  # 중심이 허용 오차 내에서 2~3초 안정되면 횡단 허용
+VEHICLE_FRAME_HOLD_SECONDS = 3.0  # 라즈베리파이의 느린 추론 중 차량 트랙을 유지
+VEHICLE_ABSENCE_CLEAR_SECONDS = VEHICLE_FRAME_HOLD_SECONDS
+VEHICLE_STATIONARY_SECONDS = 0.80  # 같은 구역에서 짧게 안정되면 횡단 허용
 VEHICLE_CENTER_TOLERANCE = 0.035  # 화면 대각선 정규화 기준 중심 이동 허용치
 VEHICLE_ASSOCIATION_GAP = 0.22
 CROSSWALK_ZONE_COUNT = 4
 CROSSWALK_REPEAT_SECONDS = 5.0
+CROSSWALK_STOP_TO_CROSS_DELAY_SECONDS = 1.5
+CROSSWALK_ALIGNMENT_HOLD_SECONDS = 1.2
+PIPER_SPEED_FACTOR = float(os.getenv("WALKING_ASSISTANT_PIPER_SPEED", "1.06"))
+SHOW_CROSSWALK_DEBUG = os.getenv("WALKING_ASSISTANT_SHOW_DEBUG", "0").strip().lower() in {"1", "true", "yes"}
 DOOR_OCR_INTERVAL = 1.0
 DOOR_OCR_REPEAT_SECONDS = 5.0
 
@@ -109,6 +104,7 @@ VEHICLE_RISK_Y2 = 1.00
 
 # 계단·엘리베이터 확정 기준
 STAIR_CONFIRM_FRAMES = 2
+STAIR_DIRECTION_THRESHOLD_CM = 300.0
 STAIR_MIN_AREA_RATIO = 0.04
 STAIR_MIN_WIDTH_RATIO = 0.18
 # 엘리베이터는 오인식 방지를 위해 매우 보수적으로 확정한다.
@@ -347,39 +343,6 @@ KOREAN_LABELS = {
 }
 
 
-class OptionalIMU:
-    def __init__(self, port=None, baudrate=115200):
-        self.ser = None
-        self.moving = False
-        self.turning = False
-
-        if port and serial:
-            try:
-                self.ser = serial.Serial(port, baudrate, timeout=0.02)
-                threading.Thread(target=self._reader, daemon=True).start()
-                print(f"IMU 연결: {port}")
-            except Exception as exc:
-                print(f"IMU 연결 실패: {exc}")
-        else:
-            print("IMU 없이 실행합니다. 카메라 기반 상태 추정만 사용합니다.")
-
-    def parse_line(self, line):
-        try:
-            values = [float(x.strip()) for x in line.split(",")]
-            if len(values) >= 6:
-                ax, ay, az, gx, gy, gz = values[:6]
-                self.moving = abs(ax) + abs(ay) + abs(az - 9.8) > 2.0
-                self.turning = abs(gz) > 35.0
-        except ValueError:
-            pass
-
-    def _reader(self):
-        while self.ser and self.ser.is_open:
-            raw = self.ser.readline().decode(errors="ignore").strip()
-            if raw:
-                self.parse_line(raw)
-
-
 class UltrasonicSensor:
     """HC-SR04P (BCM GPIO23=Trig, GPIO24=Echo) 거리 측정 및 50cm 경고음."""
 
@@ -491,6 +454,9 @@ class Speech:
         self.last_submit_time = 0.0
         self.vehicle_priority = False
         self.ultrasonic_suppressed = False
+        self.last_urgent_key = None
+        self.last_urgent_submit = 0.0
+        self.current_text = None
         # 대기 안내를 쌓아 오래된 음성이 뒤늦게 나오는 현상을 막는다.
         self.jobs = queue.Queue(maxsize=1)
         self.stopping = threading.Event()
@@ -541,7 +507,9 @@ class Speech:
             self.worker.start()
 
     def _cache_path_for_text(self, text):
-        digest = hashlib.sha256(("ko_KR-kss-medium\0" + text).encode("utf-8")).hexdigest()
+        # 재생 속도를 캐시 키에 포함해 이전 속도로 저장된 안내음이 재사용되지 않게 한다.
+        cache_key = f"ko_KR-kss-medium|{PIPER_SPEED_FACTOR:.3f}\0{text}"
+        digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
         return self.cache_dir / f"{digest}.wav"
 
     def _cache_piper_clip(self, text):
@@ -556,7 +524,7 @@ class Speech:
         with wave.open(str(temp_path), "wb") as wav_out:
             wav_out.setnchannels(first.sample_channels)
             wav_out.setsampwidth(first.sample_width)
-            wav_out.setframerate(first.sample_rate)
+            wav_out.setframerate(round(first.sample_rate * PIPER_SPEED_FACTOR))
             wav_out.writeframes(first.audio_int16_bytes)
             for chunk in chunks:
                 wav_out.writeframes(chunk.audio_int16_bytes)
@@ -564,21 +532,30 @@ class Speech:
         return cache_path
 
     def _play_file(self, path):
-        proc = subprocess.Popen(
-            [self.aplay, "-q", "-D", self.alsa_device, str(path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        with self.process_lock:
-            self.active_processes.add(proc)
-        try:
-            return_code = proc.wait()
-            error_text = proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr else ""
-            if return_code != 0:
-                raise RuntimeError(f"aplay 실패 (장치={self.alsa_device}): {error_text or return_code}")
-        finally:
-            with self.process_lock:
-                self.active_processes.discard(proc)
+        errors = []
+        devices = list(dict.fromkeys((self.alsa_device, "default")))
+        for device in devices:
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    [self.aplay, "-q", "-D", device, str(path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                )
+                with self.process_lock:
+                    self.active_processes.add(proc)
+                return_code = proc.wait()
+                error_text = proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr else ""
+                if return_code == 0:
+                    return
+                errors.append(f"{device}: {error_text or return_code}")
+            except Exception as exc:
+                errors.append(f"{device}: {exc}")
+            finally:
+                if proc is not None:
+                    with self.process_lock:
+                        self.active_processes.discard(proc)
+        raise RuntimeError("aplay 실패 (" + " | ".join(errors) + ")")
 
     def _play_piper(self, text):
         cache_path = self._cache_path_for_text(text)
@@ -596,7 +573,8 @@ class Speech:
             raise RuntimeError(f"지원하지 않는 Piper 오디오 샘플 폭: {first.sample_width}")
         proc = subprocess.Popen(
             [self.aplay, "-q", "-D", self.alsa_device, "-t", "raw", "-f", "S16_LE",
-             "-r", str(first.sample_rate), "-c", str(first.sample_channels)],
+             "-r", str(round(first.sample_rate * PIPER_SPEED_FACTOR)),
+             "-c", str(first.sample_channels)],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -607,7 +585,7 @@ class Speech:
         cache_writer = wave.open(str(temp_path), "wb")
         cache_writer.setnchannels(first.sample_channels)
         cache_writer.setsampwidth(first.sample_width)
-        cache_writer.setframerate(first.sample_rate)
+        cache_writer.setframerate(round(first.sample_rate * PIPER_SPEED_FACTOR))
         try:
             assert proc.stdin is not None
             try:
@@ -643,7 +621,7 @@ class Speech:
     def _run_espeak(self, text):
         proc = subprocess.Popen(
             [self.espeak, "-v", os.getenv("WALKING_ASSISTANT_ESPEAK_VOICE", "ko"),
-             "-s", os.getenv("WALKING_ASSISTANT_VOICE_SPEED", "165"), "--", text],
+             "-s", os.getenv("WALKING_ASSISTANT_VOICE_SPEED", "180"), "--", text],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -656,13 +634,19 @@ class Speech:
                 self.active_processes.discard(proc)
 
     def _speak(self, text):
-        try:
-            if self.piper_voice is not None:
+        if self.piper_voice is not None:
+            try:
                 self._play_piper(text)
-            elif self.espeak:
+                return
+            except Exception as exc:
+                print(f"Piper 재생 실패, eSpeak로 대체합니다: {exc}", flush=True)
+        if self.espeak:
+            try:
                 self._run_espeak(text)
-        except Exception as exc:
-            print(f"오프라인 음성 출력 오류: {exc}", flush=True)
+                return
+            except Exception as exc:
+                print(f"eSpeak 재생 실패: {exc}", flush=True)
+        print("음성 재생 실패: 사용할 수 있는 Piper/eSpeak 출력 경로가 없습니다.", flush=True)
 
     def _audio_worker(self):
         while not self.stopping.is_set():
@@ -672,12 +656,19 @@ class Speech:
                 continue
             if text is None:
                 break
-            self._speak(text)
+            self.current_text = text
+            try:
+                self._speak(text)
+            finally:
+                self.current_text = None
 
     def _queue_audio(self, text, urgent=False):
         if (self.piper_voice is None and not self.espeak) or self.stopping.is_set():
             return
         if urgent:
+            # 같은 정지 문구가 이미 재생 중이면 재생을 끊거나 다시 큐에 넣지 않는다.
+            if self.current_text == text:
+                return
             with self.process_lock:
                 for proc in tuple(self.active_processes):
                     if proc.poll() is None:
@@ -708,10 +699,10 @@ class Speech:
             return
         # 일반 모드에서 센서가 400cm 이상을 읽으면 일반 결과 음성만 억제한다.
         # 교통/횡단보도 안내는 이 필터의 영향을 받지 않는다.
-        if self.ultrasonic_suppressed and not key.startswith(("crosswalk_", "traffic_")):
+        if self.ultrasonic_suppressed and not key.startswith(("crosswalk_", "traffic_", "stairs:")):
             return
         now = time.time()
-        if key == self.last_key and now - self.last_submit_time < 2.0:
+        if not force and key == self.last_key and now - self.last_submit_time < 2.0:
             return
         self.last_key = key
         self.last_submit_time = now
@@ -719,6 +710,13 @@ class Speech:
         self._queue_audio(text)
 
     def say_urgent(self, key, text):
+        now = time.monotonic()
+        # 추적 흔들림으로 같은 긴급 안내가 매 프레임 발생해 현재 음성을
+        # 반복해서 끊지 않도록 짧게 제한한다. 첫 경고는 즉시 전달한다.
+        if key == self.last_urgent_key and now - self.last_urgent_submit < 1.2:
+            return
+        self.last_urgent_key = key
+        self.last_urgent_submit = now
         self.last_key = key
         self.last_submit_time = time.time()
         print(f"[긴급 결과] {text}", flush=True)
@@ -1262,13 +1260,16 @@ class CrosswalkAlignment:
             self.aligned = False
             return False
 
-        # 횡단보도가 검출되지 않으면 정렬 상태도 즉시 초기화한다.
+        # 횡단보도 검출이 잠깐 흔들려도 이미 확인된 정렬 상태를 유지한다.
+        if (self.aligned and self.last_detection_time is not None
+                and now - self.last_detection_time <= CROSSWALK_ALIGNMENT_HOLD_SECONDS):
+            return True
         self.reset()
         return False
 
 
 class CrosswalkSafety:
-    """차량별 중심을 추적한다. 2.5초 동안 위치가 허용 오차 내로 안정되면 CLEAR."""
+    """무신호 횡단보도용 간단한 차량 중심/구역 안정 판정."""
 
     def __init__(self):
         self.status = None
@@ -1283,87 +1284,120 @@ class CrosswalkSafety:
 
     @staticmethod
     def _center(det):
-        return ((det[2]+det[4])/2.0, (det[3]+det[5])/2.0)
+        return ((det[2] + det[4]) / 2.0, (det[3] + det[5]) / 2.0)
 
     @staticmethod
     def _distance(a, b, width, height):
-        dx = (a[0]-b[0]) / max(1, width)
-        dy = (a[1]-b[1]) / max(1, height)
-        return (dx*dx + dy*dy) ** 0.5
+        dx = (a[0] - b[0]) / max(1, width)
+        dy = (a[1] - b[1]) / max(1, height)
+        return (dx * dx + dy * dy) ** 0.5
 
     def update(self, vehicles, width, height, now=None):
         now = time.monotonic() if now is None else now
-        unmatched_tracks = set(range(len(self.tracks)))
+        # 짧은 검출 공백만큼만 기존 차량 위치를 유지한다.
+        self.tracks = [
+            track for track in self.tracks
+            if now - track["last_seen"] <= VEHICLE_FRAME_HOLD_SECONDS
+        ]
+        unused = set(range(len(self.tracks)))
         urgent = False
-        moving = False
 
-        # 먼저 오래 미검출된 트랙을 정리한다.
-        self.tracks = [t for t in self.tracks
-                       if now - t["last_seen"] < VEHICLE_ABSENCE_CLEAR_SECONDS]
-        unmatched_tracks = set(range(len(self.tracks)))
-
-        for det in sorted(vehicles, key=lambda d: proximity_score(d, width, height), reverse=True):
+        for det in vehicles:
             center = self._center(det)
             candidates = [
                 (self._distance(center, self.tracks[i]["center"], width, height), i)
-                for i in unmatched_tracks
-                if self.tracks[i]["label"] == det[0]
-                or self._distance(center, self.tracks[i]["center"], width, height) <= VEHICLE_ASSOCIATION_GAP
+                for i in unused
+                if self._distance(center, self.tracks[i]["center"], width, height)
+                    <= VEHICLE_ASSOCIATION_GAP
             ]
             match = min(candidates, default=None)
-            if match is None or match[0] > VEHICLE_ASSOCIATION_GAP:
+            zone = self.zone_index(center[0], width)
+
+            if match is None:
                 self.tracks.append({
                     "id": self.next_track_id,
                     "label": det[0],
                     "center": center,
                     "anchor": center,
+                    "zone": zone,
                     "stable_since": now,
                     "last_seen": now,
-                    "zone": self.zone_index(center[0], width),
+                    "det": det,
                 })
                 self.next_track_id += 1
-                urgent = True
-                moving = True
+                urgent = True  # 차량이 새로 보이면 즉시 정지 안내
                 continue
 
-            _, i = match
-            unmatched_tracks.discard(i)
-            track = self.tracks[i]
+            _, index = match
+            unused.discard(index)
+            track = self.tracks[index]
             drift = self._distance(center, track["anchor"], width, height)
-            gap = now - track["last_seen"]
-            if drift > VEHICLE_CENTER_TOLERANCE or gap > VEHICLE_ABSENCE_CLEAR_SECONDS:
-                # 이동 또는 긴 검출 공백: 안정 시간 다시 계산
+            changed_zone = zone != track["zone"]
+            if changed_zone or drift > VEHICLE_CENTER_TOLERANCE:
                 track["anchor"] = center
+                track["zone"] = zone
                 track["stable_since"] = now
-                moving = True
-            track["center"] = center
-            track["label"] = det[0]
-            track["last_seen"] = now
-            track["zone"] = self.zone_index(center[0], width)
+                if changed_zone:
+                    urgent = True  # 다른 구역으로 이동한 차량도 즉시 정지
 
-        # 미검출 차량은 잠시 유지하되, 안정 차량으로 간주하지 않는다.
-        active_tracks = [t for t in self.tracks
-                         if now - t["last_seen"] < VEHICLE_ABSENCE_CLEAR_SECONDS]
-        all_visible_and_stable = bool(active_tracks) and all(
-            now - t["last_seen"] <= VEHICLE_FRAME_HOLD_SECONDS
-            and now - t["stable_since"] >= VEHICLE_STATIONARY_SECONDS
-            for t in active_tracks
+            track["center"] = center
+            track["last_seen"] = now
+            track["label"] = det[0]
+            track["det"] = det
+
+        visible_tracks = [
+            track for track in self.tracks
+            if now - track["last_seen"] <= VEHICLE_FRAME_HOLD_SECONDS
+        ]
+        all_stable = bool(visible_tracks) and all(
+            now - track["stable_since"] >= VEHICLE_STATIONARY_SECONDS
+            for track in visible_tracks
         )
 
-        if vehicles and all_visible_and_stable and not moving:
+        if not vehicles and not visible_tracks:
             self.status = "CLEAR"
-        elif active_tracks:
-            self.status = "WAIT"
+        elif all_stable:
+            # 중심이 오차 범위 내에 머물고, 추적 구역이 바뀌지 않은 경우만 허용
+            self.status = "CLEAR"
         else:
-            self.status = "CLEAR"
+            self.status = "WAIT"
 
-        self.last_stop_reason = "new_or_moving_vehicle" if (urgent or moving) else None
+        self.last_stop_reason = "new_or_moved_vehicle" if urgent else None
         return self.status, urgent
 
     @staticmethod
     def zone_index(center_x, width):
         return min(CROSSWALK_ZONE_COUNT - 1,
                    max(0, int((center_x / max(1, width)) * CROSSWALK_ZONE_COUNT)))
+
+
+def draw_crosswalk_debug(frame, vehicles, safety, status):
+    """4개 구역과 감지된 차량 박스 중심의 십자선을 디버그 화면에 그린다."""
+    height, width = frame.shape[:2]
+    for index in range(1, CROSSWALK_ZONE_COUNT):
+        x = int(width * index / CROSSWALK_ZONE_COUNT)
+        cv2.line(frame, (x, 0), (x, height), (255, 180, 0), 1)
+    for index in range(CROSSWALK_ZONE_COUNT):
+        x = int(width * (index + 0.5) / CROSSWALK_ZONE_COUNT)
+        cv2.putText(frame, f"ZONE {index + 1}", (x - 32, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 180, 0), 1)
+
+    for det in vehicles:
+        _, conf, x1, y1, x2, y2 = det
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 80, 255), 2)
+        cv2.line(frame, (0, cy), (width, cy), (0, 255, 255), 1)
+        cv2.line(frame, (cx, 0), (cx, height), (0, 255, 255), 1)
+        zone = CrosswalkSafety.zone_index(cx, width) + 1
+        cv2.putText(frame, f"{det[0]} {conf:.2f} / Z{zone}",
+                    (max(4, x1), max(40, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (0, 80, 255), 1)
+
+    color = (0, 200, 0) if status == "CLEAR" else (0, 0, 255)
+    label = "CLEAR - CROSS" if status == "CLEAR" else "STOP"
+    cv2.putText(frame, label, (12, height - 18), cv2.FONT_HERSHEY_SIMPLEX,
+                0.8, color, 2)
+    return frame
 
 
 class StairConfirm:
@@ -1838,7 +1872,6 @@ def main():
     if not cap.isOpened():
         raise RuntimeError("웹캠을 열 수 없습니다.")
 
-    imu = OptionalIMU(IMU_PORT, IMU_BAUDRATE)
     speech = Speech()
     ultrasonic = UltrasonicSensor()
     door_ocr = DoorNoticeOCR(speech)
@@ -1853,9 +1886,11 @@ def main():
     last_guidance_key = None
     last_traffic_status = None
     last_crosswalk_clear_announce = 0.0
+    last_crosswalk_wait_time = None
     last_crosswalk_align_announce = 0.0
     profile_samples = deque(maxlen=120)
     last_profile_log = time.monotonic()
+    debug_display_active = SHOW_CROSSWALK_DEBUG
 
     try:
         while True:
@@ -1875,7 +1910,8 @@ def main():
                 conf=YOLO_INFERENCE_CONFIDENCE,
                 iou=NMS_IOU,
                 imgsz=INFERENCE_SIZE,
-                max_det=int(os.getenv("WALKING_ASSISTANT_MAX_DET", "20")),
+                max_det=(12 if active_prompt_mode == "TRAFFIC"
+                         else int(os.getenv("WALKING_ASSISTANT_MAX_DET", "20"))),
                 verbose=False,
             )[0]
             sync_cuda_for_profile(model)
@@ -1883,86 +1919,116 @@ def main():
             urgent_detect_to_submit_ms = None
             urgent_speech_call_ms = None
 
-            all_dets = []
-            crosswalk_vehicles = []
-            for box in result.boxes:
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                label = label_of(result, cls_id)
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                det = (label, conf, x1, y1, x2, y2)
-                if conf >= class_min_conf(label) and valid_geometry(det, w, h):
-                    all_dets.append(det)
+            if active_prompt_mode == "TRAFFIC":
+                # 교통 모드에서는 차량/횡단보도만 남긴다. 텐서 값을 박스마다
+                # 개별 변환하면 가속기 동기화가 반복되므로 결과를 한 번에 CPU로 옮긴다.
+                all_dets = []
+                crosswalk_vehicles = []
+                crosswalk_dets = []
+                boxes = result.boxes
+                cls_ids = boxes.cls.int().cpu().tolist()
+                confidences = boxes.conf.cpu().tolist()
+                coordinates = boxes.xyxy.int().cpu().tolist()
+                for cls_id, conf, coords in zip(cls_ids, confidences, coordinates):
+                    label = label_of(result, int(cls_id))
+                    x1, y1, x2, y2 = map(int, coords)
+                    det = (label, float(conf), x1, y1, x2, y2)
                     if label in VEHICLE_LABELS and conf >= CROSSWALK_VEHICLE_MIN_CONF:
-                        crosswalk_vehicles.append(det)
+                        if valid_geometry(det, w, h):
+                            crosswalk_vehicles.append(det)
+                    elif label in CROSSWALK_LABELS and conf >= CROSSWALK_MIN_CONF:
+                        if valid_geometry(det, w, h):
+                            crosswalk_dets.append(det)
 
-            crosswalk_vehicles = deduplicate_vehicle_detections(crosswalk_vehicles)
-            all_dets = deduplicate_detections(all_dets)
+                crosswalk_vehicles = deduplicate_vehicle_detections(crosswalk_vehicles)
+                crosswalk_dets = deduplicate_detections(crosswalk_dets)
+                active = []
+                confirmed_doors = []
+                confirmed_stairs = []
+                elevator_dets = []
+                filtered_for_guidance = crosswalk_dets
+                state = machine.update(crosswalk_dets)
+            else:
+                all_dets = []
+                crosswalk_vehicles = []
+                for box in result.boxes:
+                    cls_id = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    label = label_of(result, cls_id)
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    det = (label, conf, x1, y1, x2, y2)
+                    if conf >= class_min_conf(label) and valid_geometry(det, w, h):
+                        all_dets.append(det)
+                        if label in VEHICLE_LABELS and conf >= CROSSWALK_VEHICLE_MIN_CONF:
+                            crosswalk_vehicles.append(det)
 
-            # 엘리베이터 자체 또는 문에 붙은 안전 경고 스티커가
-            # 일반 문과 함께 확인될 때만 엘리베이터로 확정한다.
-            door_candidates_for_elevator = [
-                d for d in all_dets
-                if d[0] in DOOR_LABELS and d[1] >= DOOR_MIN_CONF
-            ]
-            confirmed_elevators = elevator_confirm.update(
-                all_dets, w, h, door_candidates_for_elevator
-            )
+                crosswalk_vehicles = deduplicate_vehicle_detections(crosswalk_vehicles)
+                all_dets = deduplicate_detections(all_dets)
 
-            def near_elevator(det):
-                return False
-
-            elevator_components = []
-
-            raw_doors = [
-                d for d in all_dets
-                if d[0] in DOOR_LABELS
-                and d[1] >= DOOR_MIN_CONF
-                and not near_elevator(d)
-            ]
-            confirmed_doors = door_confirm.update(raw_doors)
-
-            valid_components = door_component_confirm.update(all_dets, confirmed_doors)
-
-            filtered = [
-                d for d in all_dets
-                if d in confirmed_doors
-                or d in valid_components
-                or d in confirmed_elevators
-                or d in elevator_components
-                or d[0] not in (
-                    DOOR_LABELS | DOOR_COMPONENT_LABELS | ELEVATOR_LABELS
-                    | ELEVATOR_COMPONENT_LABELS | ELEVATOR_SUPPORT_LABELS
+                # 엘리베이터 자체 또는 문에 붙은 안전 경고 스티커가
+                # 일반 문과 함께 확인될 때만 엘리베이터로 확정한다.
+                door_candidates_for_elevator = [
+                    d for d in all_dets
+                    if d[0] in DOOR_LABELS and d[1] >= DOOR_MIN_CONF
+                ]
+                confirmed_elevators = elevator_confirm.update(
+                    all_dets, w, h, door_candidates_for_elevator
                 )
-            ]
-            confirmed_stairs = stair_confirm.update(all_dets, w, h)
 
-            # 계단은 최소 크기와 연속 검출이 확인된 경우에만 안내 후보에 포함한다.
-            filtered_for_guidance = [
-                d for d in filtered
-                if (
-                    (d[0] not in STAIR_LABELS or d in confirmed_stairs)
-                    and (d[0] not in ELEVATOR_LABELS or d in confirmed_elevators)
-                )
-            ]
+                def near_elevator(det):
+                    return False
 
-            # 일반 안내 후보는 기존처럼 중앙 보행 ROI를 사용
-            # 높이·기하학 조건을 한 번 더 적용해 바닥/벽면 오탐을 줄인다.
-            active = [
-                d for d in filtered_for_guidance
-                if walking_candidate(d, w, h)
-                and valid_geometry(d, w, h)
-            ]
+                elevator_components = []
 
-            # 횡단보도는 ROI 밖에 있어도 상태 전환에 사용
-            crosswalk_dets = [
-                d for d in filtered_for_guidance
-                if d[0] in CROSSWALK_LABELS
-            ]
-            crosswalk_aligned = crosswalk_alignment.update(crosswalk_dets, w, h)
-            elevator_dets = confirmed_elevators
+                raw_doors = [
+                    d for d in all_dets
+                    if d[0] in DOOR_LABELS
+                    and d[1] >= DOOR_MIN_CONF
+                    and not near_elevator(d)
+                ]
+                confirmed_doors = door_confirm.update(raw_doors)
 
-            state = machine.update(active + crosswalk_dets + confirmed_stairs + elevator_dets)
+                valid_components = door_component_confirm.update(all_dets, confirmed_doors)
+
+                filtered = [
+                    d for d in all_dets
+                    if d in confirmed_doors
+                    or d in valid_components
+                    or d in confirmed_elevators
+                    or d in elevator_components
+                    or d[0] not in (
+                        DOOR_LABELS | DOOR_COMPONENT_LABELS | ELEVATOR_LABELS
+                        | ELEVATOR_COMPONENT_LABELS | ELEVATOR_SUPPORT_LABELS
+                    )
+                ]
+                confirmed_stairs = stair_confirm.update(all_dets, w, h)
+
+                # 계단은 최소 크기와 연속 검출이 확인된 경우에만 안내 후보에 포함한다.
+                filtered_for_guidance = [
+                    d for d in filtered
+                    if (
+                        (d[0] not in STAIR_LABELS or d in confirmed_stairs)
+                        and (d[0] not in ELEVATOR_LABELS or d in confirmed_elevators)
+                    )
+                ]
+
+                # 일반 안내 후보는 기존처럼 중앙 보행 ROI를 사용
+                # 높이·기하학 조건을 한 번 더 적용해 바닥/벽면 오탐을 줄인다.
+                active = [
+                    d for d in filtered_for_guidance
+                    if walking_candidate(d, w, h)
+                    and valid_geometry(d, w, h)
+                ]
+
+                # 횡단보도는 ROI 밖에 있어도 상태 전환에 사용
+                crosswalk_dets = [
+                    d for d in filtered_for_guidance
+                    if d[0] in CROSSWALK_LABELS
+                ]
+                crosswalk_aligned = crosswalk_alignment.update(crosswalk_dets, w, h)
+                elevator_dets = confirmed_elevators
+
+                state = machine.update(active + crosswalk_dets + confirmed_stairs + elevator_dets)
 
             # 초음파는 일반 모드에서만 사용한다. 400cm 이상(무반사/측정범위 밖 포함)은
             # 일반 결과 음성을 억제하고, 50cm 이하는 기존 ALSA 스피커로 삐삐 경고음을 낸다.
@@ -1982,7 +2048,11 @@ def main():
             if state == "CROSSWALK":
                 traffic_status, urgent_stop = crosswalk_safety.update(crosswalk_vehicles, w, h)
                 speech.set_vehicle_priority(traffic_status == "WAIT")
-                if urgent_stop:
+                if traffic_status == "WAIT":
+                    last_crosswalk_wait_time = time.monotonic()
+                # 새 검출/박스 이동은 상태를 WAIT로 만들지만, 같은 WAIT 동안은
+                # 매 프레임 다시 말하지 않는다. CLEAR에서 WAIT로 바뀌는 순간 한 번만 알린다.
+                if traffic_status == "WAIT" and last_traffic_status != "WAIT":
                     speech_request_started = time.perf_counter()
                     urgent_detect_to_submit_ms = (speech_request_started - inference_finished) * 1000.0
                     speech.say_urgent("traffic_stop", "멈추세요")
@@ -2009,29 +2079,24 @@ def main():
 
             # 횡단보도 자체가 인식된 때만 정렬 안내/횡단 상태를 말한다.
             # 중심 정렬 전에는 가운데 정렬을 유도하고, 정렬되면 교통 판단 단계로 넘어간다.
-            if state == "CROSSWALK" and crosswalk_dets:
-                status_changed = traffic_status != last_traffic_status
-                if urgent_stop:
-                    last_guidance_key = "traffic:WAIT"
-                elif not crosswalk_aligned:
-                    now = time.monotonic()
-                    if now - last_crosswalk_align_announce >= 3.0:
-                        speech.say("crosswalk_align", "횡단보도를 가운데로 맞춰주세요", force=True)
-                        last_crosswalk_align_announce = now
+            if state == "CROSSWALK":
+                if traffic_status == "WAIT":
+                    # 정지 음성은 CLEAR→WAIT 전환 때 위에서 한 번만 제출한다.
                     last_crosswalk_clear_announce = 0.0
-                    last_guidance_key = "crosswalk:ALIGN"
-                elif status_changed and traffic_status == "WAIT":
-                    speech.say("crosswalk_wait", "멈추세요", force=True)
                     last_guidance_key = "traffic:WAIT"
                 elif traffic_status == "CLEAR":
-                    # 정렬 후 횡단보도 차량 판단이 끝난 동안 반복 안내
+                    # 정지 상태가 풀린 직후 잠시 기다렸다가 건너기 안내를 시작한다.
+                    # 이후에는 안전 상태가 유지되는 동안 정해진 간격으로 반복한다.
                     now = time.monotonic()
-                    if now - last_crosswalk_clear_announce >= CROSSWALK_REPEAT_SECONDS:
+                    wait_finished = (
+                        last_crosswalk_wait_time is None
+                        or now - last_crosswalk_wait_time >= CROSSWALK_STOP_TO_CROSS_DELAY_SECONDS
+                    )
+                    if wait_finished and now - last_crosswalk_clear_announce >= CROSSWALK_REPEAT_SECONDS:
                         speech.say("crosswalk_clear", "건너세요", force=True)
                         last_crosswalk_clear_announce = now
+                        last_crosswalk_wait_time = None
                     last_guidance_key = "traffic:CLEAR"
-                else:
-                    last_crosswalk_clear_announce = 0.0
                 target_selector.reset()
             elif urgent_stop or traffic_status == "WAIT":
                 last_crosswalk_align_announce = 0.0
@@ -2064,8 +2129,17 @@ def main():
                 primary = target_selector.update(obstacle_candidates, w, h)
 
                 if primary is not None:
-                    guidance_key = f"obstacle:{primary[0]}:{zone(primary[2], primary[4], w)}"
-                    text = guidance_for_detection(primary, w)
+                    position = zone(primary[2], primary[4], w)
+                    if primary[0] in STAIR_LABELS and ultrasonic_distance_cm is not None:
+                        stair_direction = (
+                            "내려가는" if ultrasonic_distance_cm >= STAIR_DIRECTION_THRESHOLD_CM
+                            else "올라가는"
+                        )
+                        guidance_key = f"stairs:{stair_direction}:{position}"
+                        text = f"{position} {stair_direction} 계단"
+                    else:
+                        guidance_key = f"obstacle:{primary[0]}:{position}"
+                        text = guidance_for_detection(primary, w)
                     speech.say(guidance_key, text, force=(guidance_key != last_guidance_key))
                     last_guidance_key = guidance_key
                 else:
@@ -2073,8 +2147,19 @@ def main():
 
             last_traffic_status = traffic_status
             # OCR은 확인된 문 영역만 비동기 전달한다. 차량 감지 중에는 문 안내를 보류한다.
-            if not crosswalk_vehicles:
+            if active_prompt_mode != "TRAFFIC" and not crosswalk_vehicles:
                 door_ocr.submit(frame, confirmed_doors)
+
+            if debug_display_active and state == "CROSSWALK":
+                try:
+                    debug_frame = draw_crosswalk_debug(
+                        frame.copy(), crosswalk_vehicles, crosswalk_safety, traffic_status
+                    )
+                    cv2.imshow("Crosswalk vehicle zones", debug_frame)
+                    cv2.waitKey(1)
+                except Exception as exc:
+                    debug_display_active = False
+                    print(f"디버그 영상 표시를 중지합니다: {exc}", flush=True)
 
             loop_finished = time.perf_counter()
             if PROFILE_TIMING:
@@ -2115,6 +2200,11 @@ def main():
         ultrasonic.close()
         speech.close()
         cap.release()
+        if debug_display_active:
+            try:
+                cv2.destroyWindow("Crosswalk vehicle zones")
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
