@@ -35,18 +35,18 @@ from ultralytics import YOLOE
 # - 차량이 새로 감지되면 즉시 "멈추세요"
 # - 횡단 상태는 "건너세요" 또는 "멈추세요"로 간결하게 안내
 # - 차량 중심이 2.5초 이상 안정적으로 유지되면 횡단 가능으로 판단
-# - 횡단보도 상태는 1프레임만 감지되어도 즉시 진입
+# - 구체적인 횡단보도 표시가 확인될 때만 교통 상황 모드로 전환
 # ============================================================
 
 MODEL_PATH = os.getenv("WALKING_ASSISTANT_MODEL", "yoloe-26n-seg.pt")
 CAMERA_INDEX = int(os.getenv("WALKING_ASSISTANT_CAMERA_INDEX", "0"))
 # 1차 추론은 낮은 threshold로 후보를 확보한 뒤, 아래 후처리에서
 # 클래스별 기준과 기하학 기준을 적용한다.
-CONFIDENCE = 0.20
-YOLO_INFERENCE_CONFIDENCE = float(os.getenv("WALKING_ASSISTANT_YOLO_CONF", "0.12"))  # 속도와 후보 품질 절충
+CONFIDENCE = 0.14
+YOLO_INFERENCE_CONFIDENCE = float(os.getenv("WALKING_ASSISTANT_YOLO_CONF", "0.08"))  # 속도와 후보 품질 절충
 NMS_IOU = 0.40
 # 빠른 반응을 유지하고 문 감지는 문 전용 프롬프트/기준으로 보완한다.
-INFERENCE_SIZE = int(os.getenv("WALKING_ASSISTANT_INFERENCE_SIZE", "320"))
+INFERENCE_SIZE = int(os.getenv("WALKING_ASSISTANT_INFERENCE_SIZE", "384"))
 PROFILE_TIMING = os.getenv("WALKING_ASSISTANT_PROFILE", "0").strip().lower() not in {"0", "false", "no"}
 PROFILE_INTERVAL_SECONDS = 5.0
 # CUDA 비동기 추론의 실제 시간을 재려면 1로 설정(측정 중 동기화 오버헤드가 생길 수 있음).
@@ -60,7 +60,7 @@ URGENT_SPEECH_COOLDOWN = 0.12
 CROSSWALK_VEHICLE_MIN_CONF = 0.16
 CROSSWALK_CAR_CONFIRM_FRAMES = 1
 CROSSWALK_CLEAR_SECONDS = 2.0
-CROSSWALK_MIN_CONF = 0.36
+CROSSWALK_MIN_CONF = 0.52
 CROSSWALK_ENTER_CONFIRM_SECONDS = 0.0
 CROSSWALK_EXIT_HOLD_SECONDS = 8.0
 CROSSWALK_DETECTION_GAP_SECONDS = 8.0
@@ -103,10 +103,10 @@ VEHICLE_RISK_Y1 = 0.58
 VEHICLE_RISK_Y2 = 1.00
 
 # 계단·엘리베이터 확정 기준
-STAIR_CONFIRM_FRAMES = 2
+STAIR_CONFIRM_FRAMES = 1
 STAIR_DIRECTION_THRESHOLD_CM = 300.0
-STAIR_MIN_AREA_RATIO = 0.04
-STAIR_MIN_WIDTH_RATIO = 0.18
+STAIR_MIN_AREA_RATIO = 0.015
+STAIR_MIN_WIDTH_RATIO = 0.08
 # 엘리베이터는 오인식 방지를 위해 매우 보수적으로 확정한다.
 ELEVATOR_MIN_CONF = 0.96
 ELEVATOR_CONFIRM_FRAMES = 5
@@ -138,12 +138,12 @@ GLASS_DOOR_LABELS = {
 }
 
 CLASS_MIN_CONF = {
-    "chair": 0.65,
-    "crosswalk": CROSSWALK_MIN_CONF,
-    "zebra crossing": CROSSWALK_MIN_CONF,
-    "painted zebra crossing stripes": CROSSWALK_MIN_CONF,
-    "pedestrian crossing stripes on pavement": CROSSWALK_MIN_CONF,
-    "marked pedestrian crosswalk": CROSSWALK_MIN_CONF,
+    "bed": 0.48,
+    "table": 0.28,
+    "desk": 0.26,
+    "chair": 0.48,
+    "painted zebra-striped pedestrian crossing on a road": CROSSWALK_MIN_CONF,
+    "white parallel pedestrian crossing stripes painted on asphalt": CROSSWALK_MIN_CONF,
     CAR_PROMPT: 0.17,
     CAR_DISTANT_PROMPT: 0.15,
     CAR_FAR_PROMPT: 0.15,
@@ -161,10 +161,15 @@ CLASS_MIN_CONF = {
     "kick scooter": 0.17,
     "electric scooter": 0.17,
     "electric kick scooter": 0.17,
-    "person": 0.40,
-    "stairs": 0.45,
-    "staircase": 0.45,
-    "stair landing": 0.50,
+    "person": 0.30,
+    "stairs": 0.30,
+    "staircase": 0.30,
+    "stairway steps": 0.30,
+    "stair steps on a staircase": 0.30,
+    "indoor staircase with visible steps": 0.30,
+    "staircase with visible steps": 0.30,
+    "stairs with visible steps": 0.30,
+    "stair landing": 0.46,
     # Door labels use lower thresholds; require repeated detections before announcing.
     "door": 0.24,
     "entrance door": 0.24,
@@ -213,15 +218,20 @@ PROMPTS = [
     "sliding door", "glass sliding door", "sliding glass door",
     "automatic door", "glass door", "hinged door", "door handle", "doorknob",
     "lever handle", "pull handle", "push bar", "stairs", "staircase",
-    "elevator", "elevator safety warning sticker", "elevator safety notice",
-    "crosswalk", "zebra crossing",
+    "stairway steps", "stair steps on a staircase",
+    "indoor staircase with visible steps", "staircase with visible steps",
+    "stairs with visible steps", "elevator", "elevator safety warning sticker", "elevator safety notice",
+    "painted zebra-striped pedestrian crossing on a road",
+    "white parallel pedestrian crossing stripes painted on asphalt",
 ]
 
-# 횡단보도 모드에서는 차량·킥보드·오토바이와 횡단보도만 추론한다.
-# 모드가 바뀔 때만 set_classes를 호출해 매 프레임 프롬프트 인코딩을 반복하지 않는다.
+# 교통 전용 프롬프트 목록은 참고용이며, 실행 중에는 전체 PROMPTS를 고정 사용한다.
+# 상태 전환마다 프롬프트를 재인코딩하지 않아 모드 전환 지연과 감지 공백을 막는다.
 TRAFFIC_PROMPTS = [
     CAR_PROMPT, "car", SCOOTER_PROMPT, "scooter",
-    MOTORCYCLE_PROMPT, "motorcycle", "crosswalk", "zebra crossing",
+    MOTORCYCLE_PROMPT, "motorcycle",
+    "painted zebra-striped pedestrian crossing on a road",
+    "white parallel pedestrian crossing stripes painted on asphalt",
 ]
 
 DOOR_LABELS = {
@@ -247,7 +257,9 @@ DOOR_COMPONENT_LABELS = {
 }
 
 STAIR_LABELS = {
-    "stairs", "staircase", "stair landing",
+    "stairs", "staircase", "stairway steps", "stair steps on a staircase",
+    "indoor staircase with visible steps", "staircase with visible steps",
+    "stairs with visible steps", "stair landing",
 }
 # 버튼 프롬프트는 제거한다. 현재 모델에서는 일반 표지판·벽면·문손잡이를
 # 버튼으로 오인할 가능성이 커서, 엘리베이터가 확정된 뒤에도 버튼 안내를 하지 않는다.
@@ -260,10 +272,8 @@ ELEVATOR_SUPPORT_LABELS = {
     "elevator safety notice",
 }
 CROSSWALK_LABELS = {
-    "crosswalk", "zebra crossing",
-    "painted zebra crossing stripes",
-    "pedestrian crossing stripes on pavement",
-    "marked pedestrian crosswalk",
+    "painted zebra-striped pedestrian crossing on a road",
+    "white parallel pedestrian crossing stripes painted on asphalt",
 }
 VEHICLE_LABELS = {
     CAR_PROMPT, CAR_DISTANT_PROMPT, CAR_FAR_PROMPT,
@@ -446,6 +456,109 @@ class UltrasonicSensor:
             self.ready = False
 
 
+class ShutdownButton:
+    """GPIO17 버튼을 별도 폴링 스레드로 감시한다."""
+
+    PIN = 17
+
+    def __init__(self, shutdown_requested):
+        self.gpio = None
+        self.ready = False
+        self.shutdown_requested = shutdown_requested
+        self.active_level = int(os.getenv("WALKING_ASSISTANT_BUTTON_ACTIVE_LEVEL", "0"))
+        self._stop_polling = threading.Event()
+        self._poll_thread = None
+        try:
+            import RPi.GPIO as GPIO
+            self.gpio = GPIO
+            GPIO.setmode(GPIO.BCM)
+            pull = GPIO.PUD_DOWN if self.active_level == 1 else GPIO.PUD_UP
+            GPIO.setup(self.PIN, GPIO.IN, pull_up_down=pull)
+            self.ready = True
+            self._poll_thread = threading.Thread(
+                target=self._poll_button, name="shutdown-button", daemon=True
+            )
+            self._poll_thread.start()
+            print(
+                f"종료 버튼 감시 시작: GPIO{self.PIN}(물리 11), "
+                f"눌림 신호={'HIGH' if self.active_level else 'LOW'} (폴링 방식)",
+                flush=True,
+            )
+        except Exception as exc:
+            self.ready = False
+            print(f"종료 버튼 비활성화: {exc}", flush=True)
+
+    def _poll_button(self):
+        # 시작 시 버튼 신호가 눌림 상태로 읽혀도 종료하지 않도록,
+        # 먼저 '떼어진 상태'가 안정적으로 확인된 뒤에만 버튼 입력을 받는다.
+        released_since = None
+        armed = False
+        pressed_since = None
+        while not self._stop_polling.wait(0.02):
+            try:
+                level = int(self.gpio.input(self.PIN))
+                now = time.monotonic()
+                is_pressed = level == self.active_level
+                if not armed:
+                    if is_pressed:
+                        released_since = None
+                    else:
+                        if released_since is None:
+                            released_since = now
+                        elif now - released_since >= 0.5:
+                            armed = True
+                            print("종료 버튼 준비 완료 (버튼을 눌러 종료)", flush=True)
+                    continue
+
+                if not is_pressed:
+                    pressed_since = None
+                    continue
+                if pressed_since is None:
+                    pressed_since = now
+                elif now - pressed_since >= 0.08:
+                    print(
+                        "종료 버튼이 눌렸습니다. 프로그램을 정리한 뒤 라즈베리파이를 종료합니다.",
+                        flush=True,
+                    )
+                    self.shutdown_requested.set()
+                    return
+            except Exception as exc:
+                print(f"종료 버튼 입력 확인 오류: {exc}", flush=True)
+                return
+
+    def close(self):
+        self._stop_polling.set()
+        if self._poll_thread is not None:
+            self._poll_thread.join(timeout=0.5)
+        if self.gpio is not None and self.ready:
+            try:
+                self.gpio.cleanup(self.PIN)
+            except Exception:
+                pass
+            self.ready = False
+
+
+def shutdown_system():
+    """권한이 허용된 경우 OS 종료를 요청한다."""
+    shutdown_cmd = shutil.which("shutdown") or "/sbin/shutdown"
+    command = ([shutdown_cmd, "-h", "now"] if os.geteuid() == 0
+               else ["sudo", "-n", shutdown_cmd, "-h", "now"])
+    try:
+        result = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=5.0, check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "권한이 거부되었습니다.").strip()
+            print(
+                f"라즈베리파이 종료 명령 실패: {detail}\n"
+                "버튼만 눌러 무인 종료하려면 sudoers에서 shutdown 명령의 NOPASSWD 권한을 설정하세요.",
+                flush=True,
+            )
+    except Exception as exc:
+        print(f"라즈베리파이 종료 명령 실행 실패: {exc}", flush=True)
+
+
 class Speech:
     """오프라인 한국어 Piper TTS를 상주 로드하고, 없으면 로컬 eSpeak로 대체한다."""
 
@@ -479,16 +592,18 @@ class Speech:
             try:
                 from piper import PiperVoice
                 print("오프라인 한국어 Piper 음성 모델 로딩 중...", flush=True)
+                piper_load_started = time.monotonic()
                 self.piper_voice = PiperVoice.load(str(self.piper_model))
+                print(f"Piper 음성 모델 로드 완료: {time.monotonic() - piper_load_started:.1f}초", flush=True)
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
-                # Piper/ONNX의 첫 추론 초기화 비용을 시작 단계에서 미리 지불한다.
-                next(iter(self.piper_voice.synthesize("음성 안내 준비")), None)
-                # 안전 문구를 미리 음성파일로 만들어, 첫 위험 안내부터 즉시 재생한다.
+                # 매번 버리는 테스트 합성은 생략한다. 안전 문구는 실제 재생용으로 캐시한다.
+                cache_started = time.monotonic()
                 for phrase in ("멈추세요", "건너세요", "횡단보도를 가운데로 맞춰주세요"):
                     try:
                         self._cache_piper_clip(phrase)
                     except Exception as warm_exc:
                         print(f"안내 문구 사전 준비 건너뜀: {warm_exc}", flush=True)
+                print(f"Piper 안전문구 준비 완료: {time.monotonic() - cache_started:.1f}초", flush=True)
                 print(f"음성 출력: Piper 한국어 로컬 음성 준비 완료 (ALSA={self.alsa_device}, 안전문구 캐시, 인터넷 불필요)", flush=True)
             except Exception as exc:
                 print(f"Piper 초기화 실패: {exc}", flush=True)
@@ -586,6 +701,7 @@ class Speech:
         cache_writer.setnchannels(first.sample_channels)
         cache_writer.setsampwidth(first.sample_width)
         cache_writer.setframerate(round(first.sample_rate * PIPER_SPEED_FACTOR))
+        cache_writer_closed = False
         try:
             assert proc.stdin is not None
             try:
@@ -606,6 +722,7 @@ class Speech:
                 except BrokenPipeError:
                     pass
             cache_writer.close()
+            cache_writer_closed = True
             return_code = proc.wait()
             error_text = proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr else ""
             if return_code != 0:
@@ -613,8 +730,11 @@ class Speech:
                 raise RuntimeError(f"aplay 실패 (장치={self.alsa_device}): {error_text or return_code}")
             temp_path.replace(cache_path)
         finally:
-            if not cache_writer.closed:
-                cache_writer.close()
+            if not cache_writer_closed:
+                try:
+                    cache_writer.close()
+                except Exception:
+                    pass
             with self.process_lock:
                 self.active_processes.discard(proc)
 
@@ -756,7 +876,8 @@ def zone(x1, x2, width):
 
 
 def roi(width, height):
-    return int(width * 0.37), int(height * 0.12), int(width * 0.63), height
+    # 좁은 중앙 ROI가 일반 사물 검출을 가리지 않도록 좌우 범위를 넓힌다.
+    return int(width * 0.20), int(height * 0.08), int(width * 0.80), height
 
 
 def walking_candidate(det, width, height):
@@ -887,9 +1008,15 @@ def valid_geometry(det, width, height):
         # 원거리 차량/오토바이는 박스가 작으므로 일반 사물보다 작은 크기까지 허용
         return (bw >= 5 and bh >= 5 and area_ratio >= 0.00005
                 and area_ratio <= 0.45 and 0.18 <= aspect <= 8.0)
+    if label == "bed":
+        # 침대 오인식을 줄이기 위해 높은 신뢰도와 더 큰 박스 크기를 요구
+        return (area_ratio >= 0.02 and bw >= width * 0.14
+                and bh >= height * 0.08 and aspect <= 5.5)
     if label in CROSSWALK_LABELS:
-        # 도로 면 전체가 아니라 실제 횡단보도 표시로 보이는 유효 박스만 허용
-        return area_ratio >= 0.00020 and bw >= width * 0.025 and bh >= height * 0.015
+        # 작고 애매한 도로/계단 무늬 오인식을 줄이기 위해 실제 표시가
+        # 일정 면적과 가로·세로 크기로 검출된 경우만 횡단보도 후보로 인정한다.
+        return (area_ratio >= 0.0010 and bw >= width * 0.08
+                and bh >= height * 0.025)
     if label in DOOR_LABELS:
         # 정면 유리문은 투명해 박스가 작고 얇게 잡힐 수 있다.
         if label in GLASS_DOOR_LABELS or label in {
@@ -1000,7 +1127,13 @@ class SituationMachine:
     def update(self, detections):
         labels = {d[0] for d in detections}
         now = time.monotonic()
-        crosswalk_detected = bool(labels & CROSSWALK_LABELS)
+        crosswalk_candidates = [d for d in detections if d[0] in CROSSWALK_LABELS]
+        stair_candidates = [d for d in detections if d[0] in STAIR_LABELS]
+        # 같은 화면 영역이 계단으로도 검출되면 횡단보도로 단정하지 않는다.
+        crosswalk_detected = any(
+            not any(box_iou(crosswalk, stair) >= 0.12 for stair in stair_candidates)
+            for crosswalk in crosswalk_candidates
+        )
 
         if crosswalk_detected:
             self.last_crosswalk_time = now
@@ -1037,24 +1170,11 @@ class SituationMachine:
         if self.forced:
             return self.state
 
-        if labels & ELEVATOR_LABELS:
-            candidate = "ELEVATOR"
-        elif labels & STAIR_LABELS:
-            candidate = "STAIRS"
-        elif labels & DOOR_LABELS:
-            candidate = "DOOR"
-        else:
-            candidate = "WALK"
-
-        if candidate == self.candidate:
-            self.count += 1
-        else:
-            self.candidate, self.count = candidate, 1
-
-        if candidate == "WALK":
-            self.state = "WALK"
-        elif self.count >= STATE_CONFIRM_FRAMES:
-            self.state = candidate
+        # 모드 구분은 일반 보행과 횡단보도만 유지한다.
+        # 문/계단/엘리베이터 검출은 안내 대상일 뿐 별도 모드를 만들지 않는다.
+        self.state = "WALK"
+        self.candidate = "WALK"
+        self.count = 1
         return self.state
 
 
@@ -1418,7 +1538,13 @@ class StairConfirm:
         width_ratio = (x2 - x1) / max(1, width)
         # 계단 전체가 화면에 들어와야 한다는 조건은 사용하지 않는다.
         # 화면에 일부만 보여도 보행 영역에 있고 최소 크기만 넘으면 허용한다.
-        overlaps_walk = walking_candidate(det, width, height)
+        # 계단은 화면 좌우에 일부만 걸쳐도 놓치지 않도록 중앙 좁은 ROI 대신
+        # 화면 하단의 넓은 시야를 사용한다.
+        overlaps_walk = (
+            x2 >= width * 0.05
+            and x1 <= width * 0.95
+            and y2 >= height * 0.30
+        )
         large_enough = (
             box_area / frame_area >= STAIR_MIN_AREA_RATIO
             or width_ratio >= STAIR_MIN_WIDTH_RATIO
@@ -1845,7 +1971,26 @@ def main():
         print(f"PyTorch CPU 스레드 설정을 건너뜁니다: {exc}")
     model_load_started = time.monotonic()
     model = YOLOE(MODEL_PATH)
-    model.set_classes(PROMPTS)
+    # YOLOE 텍스트 프롬프트 임베딩을 저장해 두면 이후 실행 때
+    # set_classes()의 텍스트 인코더 초기화/다운로드를 반복하지 않는다.
+    prompt_embeddings_path = Path(__file__).resolve().parent / "prompt_embeddings_v2.npz"
+    embeddings_loaded = False
+    if prompt_embeddings_path.is_file():
+        try:
+            model.load_prompt_embeddings(str(prompt_embeddings_path))
+            embeddings_loaded = True
+            print(f"저장된 YOLOE 프롬프트 임베딩 사용: {prompt_embeddings_path}", flush=True)
+        except Exception as exc:
+            print(f"저장된 프롬프트 임베딩을 사용할 수 없어 다시 생성합니다: {exc}", flush=True)
+
+    if not embeddings_loaded:
+        model.set_classes(PROMPTS)
+        try:
+            model.save_prompt_embeddings(str(prompt_embeddings_path))
+            print(f"YOLOE 프롬프트 임베딩 저장 완료: {prompt_embeddings_path}", flush=True)
+        except Exception as exc:
+            print(f"프롬프트 임베딩 저장 생략(이번 실행은 계속합니다): {exc}", flush=True)
+
     warmup_started = time.monotonic()
     try:
         warmup = np.zeros((INFERENCE_SIZE, INFERENCE_SIZE, 3), dtype=np.uint8)
@@ -1856,6 +2001,7 @@ def main():
         print(f"추론 워밍업 생략: {exc}", flush=True)
     print(f"모델 준비 완료: {time.monotonic() - model_load_started:.1f}초", flush=True)
     active_prompt_mode = "GENERAL"
+    last_reported_state = "WALK"
 
     raw_cap = cv2.VideoCapture(CAMERA_INDEX)
     raw_cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(os.getenv("WALKING_ASSISTANT_CAMERA_WIDTH", "640")))
@@ -1874,6 +2020,8 @@ def main():
 
     speech = Speech()
     ultrasonic = UltrasonicSensor()
+    shutdown_requested = threading.Event()
+    shutdown_button = ShutdownButton(shutdown_requested)
     door_ocr = DoorNoticeOCR(speech)
     machine = SituationMachine()
     crosswalk_safety = CrosswalkSafety()
@@ -1893,7 +2041,7 @@ def main():
     debug_display_active = SHOW_CROSSWALK_DEBUG
 
     try:
-        while True:
+        while not shutdown_requested.is_set():
             frame_started = time.perf_counter()
             ok, frame = cap.read()
             capture_finished = time.perf_counter()
@@ -2016,7 +2164,7 @@ def main():
                 # 높이·기하학 조건을 한 번 더 적용해 바닥/벽면 오탐을 줄인다.
                 active = [
                     d for d in filtered_for_guidance
-                    if walking_candidate(d, w, h)
+                    if (walking_candidate(d, w, h) or d[0] in STAIR_LABELS)
                     and valid_geometry(d, w, h)
                 ]
 
@@ -2063,13 +2211,11 @@ def main():
                 traffic_status, urgent_stop = "CLEAR", False
                 speech.set_vehicle_priority(False)
 
-            # 자동/수동 횡단보도 모드에서는 교통 전용 프롬프트로 전환한다.
-            # 전체 프롬프트 복귀도 모드 전환 시에만 수행한다.
-            desired_prompt_mode = "TRAFFIC" if state == "CROSSWALK" else "GENERAL"
-            if desired_prompt_mode != active_prompt_mode:
-                model.set_classes(TRAFFIC_PROMPTS if desired_prompt_mode == "TRAFFIC" else PROMPTS)
-                active_prompt_mode = desired_prompt_mode
-                print(f"추론 프롬프트 모드: {active_prompt_mode} ({INFERENCE_SIZE}px)")
+            # 프롬프트 집합은 시작할 때 한 번만 설정한다. 횡단보도/일반 상황은
+            # 같은 추론 결과로 판단해 set_classes 재설정에 따른 전환 지연을 없앤다.
+            if state != last_reported_state:
+                print(f"상황 모드: {state}", flush=True)
+                last_reported_state = state
 
             # ----------------------------------------------------
             # 최우선 정지 게이트: 신규 차량 검출 시 다른 안내를 중단하고 즉시 "멈추세요".
@@ -2117,6 +2263,12 @@ def main():
                     if is_walk_obstacle(d)
                     and (d[0] not in DOOR_LABELS or d in confirmed_doors)
                 ]
+                # 차량은 횡단보도 안전판단과 별개로 일반 모드에서도 위치/종류를 안내한다.
+                # 횡단보도 모드 전용의 "멈추세요/건너세요" 판단은 위 CROSSWALK 분기에서만 한다.
+                obstacle_candidates.extend(
+                    d for d in crosswalk_vehicles
+                    if valid_geometry(d, w, h)
+                )
                 # ROI 안에 안내 후보가 없더라도 화면에서 유효하게 인식된 장애물을
                 # 무음으로 버리지 않는다. ROI 후보가 있으면 기존처럼 그 대상을 우선한다.
                 if not obstacle_candidates:
@@ -2126,6 +2278,10 @@ def main():
                         and valid_geometry(d, w, h)
                         and (d[0] not in DOOR_LABELS or d in confirmed_doors)
                     ]
+                    obstacle_candidates.extend(
+                        d for d in crosswalk_vehicles
+                        if valid_geometry(d, w, h)
+                    )
                 primary = target_selector.update(obstacle_candidates, w, h)
 
                 if primary is not None:
@@ -2197,6 +2353,7 @@ def main():
 
     finally:
         door_ocr.close()
+        shutdown_button.close()
         ultrasonic.close()
         speech.close()
         cap.release()
@@ -2205,6 +2362,8 @@ def main():
                 cv2.destroyWindow("Crosswalk vehicle zones")
             except Exception:
                 pass
+        if shutdown_requested.is_set():
+            shutdown_system()
 
 
 if __name__ == "__main__":
