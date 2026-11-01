@@ -457,14 +457,17 @@ class UltrasonicSensor:
 
 
 class ShutdownButton:
-    """GPIO17 버튼을 별도 폴링 스레드로 감시한다."""
+    """짧게 누르면 프로그램 일시정지/재개, 2초 이상 누르면 OS 종료."""
 
     PIN = 17
+    LONG_PRESS_SECONDS = 2.0
+    DEBOUNCE_SECONDS = 0.08
 
-    def __init__(self, shutdown_requested):
+    def __init__(self, shutdown_requested, paused):
         self.gpio = None
         self.ready = False
         self.shutdown_requested = shutdown_requested
+        self.paused = paused
         self.active_level = int(os.getenv("WALKING_ASSISTANT_BUTTON_ACTIVE_LEVEL", "0"))
         self._stop_polling = threading.Event()
         self._poll_thread = None
@@ -480,25 +483,26 @@ class ShutdownButton:
             )
             self._poll_thread.start()
             print(
-                f"종료 버튼 감시 시작: GPIO{self.PIN}(물리 11), "
-                f"눌림 신호={'HIGH' if self.active_level else 'LOW'} (폴링 방식)",
+                f"버튼 감시 시작: GPIO{self.PIN}(물리 11), 짧게 누름=일시정지/재개, "
+                f"{self.LONG_PRESS_SECONDS:.0f}초 이상=전원 종료",
                 flush=True,
             )
         except Exception as exc:
             self.ready = False
-            print(f"종료 버튼 비활성화: {exc}", flush=True)
+            print(f"버튼 감시 비활성화: {exc}", flush=True)
 
     def _poll_button(self):
-        # 시작 시 버튼 신호가 눌림 상태로 읽혀도 종료하지 않도록,
-        # 먼저 '떼어진 상태'가 안정적으로 확인된 뒤에만 버튼 입력을 받는다.
+        # 부팅 시 눌린 채 연결된 경우에는 떼어진 상태가 확인된 뒤 감시를 시작한다.
         released_since = None
         armed = False
         pressed_since = None
+        long_press_handled = False
         while not self._stop_polling.wait(0.02):
             try:
                 level = int(self.gpio.input(self.PIN))
                 now = time.monotonic()
                 is_pressed = level == self.active_level
+
                 if not armed:
                     if is_pressed:
                         released_since = None
@@ -507,23 +511,33 @@ class ShutdownButton:
                             released_since = now
                         elif now - released_since >= 0.5:
                             armed = True
-                            print("종료 버튼 준비 완료 (버튼을 눌러 종료)", flush=True)
+                            print("버튼 준비 완료", flush=True)
                     continue
 
-                if not is_pressed:
-                    pressed_since = None
+                if is_pressed:
+                    if pressed_since is None:
+                        pressed_since = now
+                        long_press_handled = False
+                    elif not long_press_handled and now - pressed_since >= self.LONG_PRESS_SECONDS:
+                        long_press_handled = True
+                        print("버튼 2초 이상 누름: 프로그램을 정리한 뒤 전원을 종료합니다.", flush=True)
+                        self.shutdown_requested.set()
+                        return
                     continue
-                if pressed_since is None:
-                    pressed_since = now
-                elif now - pressed_since >= 0.08:
-                    print(
-                        "종료 버튼이 눌렸습니다. 프로그램을 정리한 뒤 라즈베리파이를 종료합니다.",
-                        flush=True,
-                    )
-                    self.shutdown_requested.set()
-                    return
+
+                if pressed_since is not None:
+                    press_duration = now - pressed_since
+                    if press_duration >= self.DEBOUNCE_SECONDS and not long_press_handled:
+                        if self.paused.is_set():
+                            self.paused.clear()
+                            print("프로그램 재개", flush=True)
+                        else:
+                            self.paused.set()
+                            print("프로그램 일시정지", flush=True)
+                    pressed_since = None
+                    long_press_handled = False
             except Exception as exc:
-                print(f"종료 버튼 입력 확인 오류: {exc}", flush=True)
+                print(f"버튼 입력 확인 오류: {exc}", flush=True)
                 return
 
     def close(self):
@@ -847,6 +861,11 @@ class Speech:
             for proc in tuple(self.active_processes):
                 if proc.poll() is None:
                     proc.terminate()
+        while True:
+            try:
+                self.jobs.get_nowait()
+            except queue.Empty:
+                break
 
     def close(self):
         self.stopping.set()
@@ -2021,7 +2040,8 @@ def main():
     speech = Speech()
     ultrasonic = UltrasonicSensor()
     shutdown_requested = threading.Event()
-    shutdown_button = ShutdownButton(shutdown_requested)
+    program_paused = threading.Event()
+    shutdown_button = ShutdownButton(shutdown_requested, program_paused)
     door_ocr = DoorNoticeOCR(speech)
     machine = SituationMachine()
     crosswalk_safety = CrosswalkSafety()
@@ -2040,8 +2060,21 @@ def main():
     last_profile_log = time.monotonic()
     debug_display_active = SHOW_CROSSWALK_DEBUG
 
+    pause_cleanup_done = False
     try:
         while not shutdown_requested.is_set():
+            if program_paused.is_set():
+                if not pause_cleanup_done:
+                    speech.cancel()
+                    crosswalk_safety.reset()
+                    target_selector.reset()
+                    pause_cleanup_done = True
+                time.sleep(0.05)
+                continue
+            if pause_cleanup_done:
+                last_guidance_key = None
+                last_traffic_status = None
+                pause_cleanup_done = False
             frame_started = time.perf_counter()
             ok, frame = cap.read()
             capture_finished = time.perf_counter()
