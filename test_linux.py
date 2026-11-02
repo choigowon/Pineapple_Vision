@@ -60,8 +60,8 @@ URGENT_SPEECH_COOLDOWN = 0.12
 CROSSWALK_VEHICLE_MIN_CONF = 0.16
 CROSSWALK_CAR_CONFIRM_FRAMES = 1
 CROSSWALK_CLEAR_SECONDS = 2.0
-CROSSWALK_MIN_CONF = 0.40
-CROSSWALK_ENTER_CONFIRM_SECONDS = 0.0
+CROSSWALK_MIN_CONF = 0.58
+CROSSWALK_ENTER_CONFIRM_SECONDS = 0.55
 CROSSWALK_EXIT_HOLD_SECONDS = 2.2
 CROSSWALK_DETECTION_GAP_SECONDS = 2.2
 # 차량 중심 추적: 검출 즉시 정지, 2~3초 안정 확인 후에만 횡단 허용
@@ -71,7 +71,7 @@ VEHICLE_STATIONARY_SECONDS = 0.80  # 같은 구역에서 짧게 안정되면 횡
 VEHICLE_CENTER_TOLERANCE = 0.035  # 화면 대각선 정규화 기준 중심 이동 허용치
 VEHICLE_ASSOCIATION_GAP = 0.22
 CROSSWALK_ZONE_COUNT = 4
-CROSSWALK_REPEAT_SECONDS = 5.0
+CROSSWALK_REPEAT_SECONDS = 7.0
 CROSSWALK_STOP_TO_CROSS_DELAY_SECONDS = 1.5
 CROSSWALK_ALIGNMENT_HOLD_SECONDS = 1.2
 PIPER_SPEED_FACTOR = float(os.getenv("WALKING_ASSISTANT_PIPER_SPEED", "1.12"))
@@ -105,8 +105,8 @@ VEHICLE_RISK_Y2 = 1.00
 # 계단·엘리베이터 확정 기준
 STAIR_CONFIRM_FRAMES = 1
 STAIR_DIRECTION_THRESHOLD_CM = 300.0
-STAIR_MIN_AREA_RATIO = 0.015
-STAIR_MIN_WIDTH_RATIO = 0.08
+STAIR_MIN_AREA_RATIO = 0.007
+STAIR_MIN_WIDTH_RATIO = 0.045
 # 엘리베이터는 오인식 방지를 위해 매우 보수적으로 확정한다.
 ELEVATOR_MIN_CONF = 0.96
 ELEVATOR_CONFIRM_FRAMES = 5
@@ -127,10 +127,12 @@ MOTORCYCLE_DISTANT_PROMPT = "small distant motorcycle with rider"
 MOTORCYCLIST_PROMPT = "motorcyclist riding a motorcycle on a road"
 SCOOTER_RIDER_PROMPT = "person riding an electric scooter on a road"
 HANGER_PROMPTS = {
-    "clothes rack", "clothing rack", "garment rack", "coat rack",
+    "freestanding clothes rack with hanging clothes",
+    "clothing rack with several garments on hangers",
+    "indoor garment rack with clothes hanging from it",
 }
 HANGER_LABELS = HANGER_PROMPTS
-
+RAILING_LABELS = {"railing", "guardrail"}
 GLASS_DOOR_LABELS = {
     "glass door", "transparent glass door", "clear glass door",
     "glass entrance door", "large glass entrance door",
@@ -144,13 +146,18 @@ GLASS_DOOR_LABELS = {
     "storefront glass entrance door viewed from outside",
     "commercial building glass entry door with a visible doorway",
     "outside view of transparent sliding glass entrance door",
+    "glass door with a vertical metal handle",
+    "transparent glass entrance door with a visible handle",
 }
 
 BED_LABELS = {
     "bed with mattress and pillow",
     "bed with visible mattress, pillow and blanket in a bedroom",
 }
-WALL_SURFACE_LABELS = {"tiled wall", "ceramic wall tiles"}
+WALL_SURFACE_LABELS = {
+    "tiled wall", "ceramic wall tiles", "wall covered with square ceramic tiles",
+    "close-up of a tiled wall", "wall with a grid of square tiles",
+}
 DOOR_LOCK_LABELS = {
     "door lock", "door lock with handle", "keypad door lock",
     "electronic keypad door lock", "deadbolt lock on a door", "door lever lock",
@@ -163,8 +170,11 @@ CLASS_MIN_CONF = {
     "bed with visible mattress, pillow and blanket in a bedroom": 0.48,
     "tiled wall": 0.42,
     "ceramic wall tiles": 0.42,
+    "wall covered with square ceramic tiles": 0.44,
+    "close-up of a tiled wall": 0.44,
+    "wall with a grid of square tiles": 0.44,
     "refrigerator": 0.46,
-    **{label: 0.40 for label in HANGER_PROMPTS},
+    **{label: 0.56 for label in HANGER_PROMPTS},
     "window": 0.38,
     "glass window": 0.40,
     "building window": 0.40,
@@ -177,8 +187,6 @@ CLASS_MIN_CONF = {
     "chair": 0.48,
     "painted zebra-striped pedestrian crossing on a road": CROSSWALK_MIN_CONF,
     "white parallel pedestrian crossing stripes painted on asphalt": CROSSWALK_MIN_CONF,
-    "partly occluded zebra crossing on a road": CROSSWALK_MIN_CONF,
-    "visible pedestrian crossing stripes partly blocked by objects": CROSSWALK_MIN_CONF,
     CAR_PROMPT: 0.17,
     CAR_DISTANT_PROMPT: 0.15,
     CAR_FAR_PROMPT: 0.15,
@@ -204,6 +212,11 @@ CLASS_MIN_CONF = {
     "indoor staircase with visible steps": 0.30,
     "staircase with visible steps": 0.30,
     "stairs with visible steps": 0.30,
+    "downward stairs": 0.27,
+    "down staircase": 0.27,
+    "descending staircase": 0.27,
+    "stairs going down": 0.27,
+    "staircase descending from above": 0.27,
     "stair landing": 0.46,
     # Door labels use lower thresholds; require repeated detections before announcing.
     "door": 0.24,
@@ -251,6 +264,9 @@ CLASS_MIN_CONF = {
     "pull handle": 0.40,
     "pull door handle": 0.40,
     "sliding glass door handle": 0.40,
+    "vertical pull handle on a glass door": 0.38,
+    "metal pull handle on a glass door": 0.38,
+    "handle on a transparent glass door": 0.38,
     "door lock": 0.68,
     "door lock with handle": 0.68,
     "keypad door lock": 0.68,
@@ -271,7 +287,7 @@ PROMPTS = [
     "bed with visible mattress, pillow and blanket in a bedroom", "shelf", "wardrobe",
     "refrigerator", "window", "glass window", "building window", "exterior window",
     *sorted(HANGER_PROMPTS),
-    "tiled wall", "ceramic wall tiles",
+    *sorted(WALL_SURFACE_LABELS),
     "tree", CAR_PROMPT, "car", SCOOTER_PROMPT, "scooter",
     MOTORCYCLE_PROMPT, "motorcycle", "bollard",
     "utility pole", "bicycle", "person", "curb", "railing", "guardrail",
@@ -282,9 +298,13 @@ PROMPTS = [
     "storefront entrance door with glass panels and visible door handles",
     "glass entry door in a building entrance frame",
     "outside view of a glass entrance doorway with door handles",
+    "glass door with a vertical metal handle",
+    "transparent glass entrance door with a visible handle",
     "door handle", "doorknob", "door knob", "lever handle", "lever door handle",
     "door handle mounted on a door", "door lever handle on a door",
     "metal handle attached to a door", "door knob mounted on a door",
+    "vertical pull handle on a glass door", "metal pull handle on a glass door",
+    "handle on a transparent glass door",
     "pull handle", "pull door handle", "sliding glass door handle",
     "recessed door handle", "push bar",
     "door lock", "door lock with handle", "keypad door lock",
@@ -292,11 +312,11 @@ PROMPTS = [
     "stairs", "staircase",
     "stairway steps", "stair steps on a staircase",
     "indoor staircase with visible steps", "staircase with visible steps",
-    "stairs with visible steps", "elevator", "elevator safety warning sticker", "elevator safety notice",
+    "stairs with visible steps", "downward stairs", "down staircase",
+    "descending staircase", "stairs going down", "staircase descending from above",
+    "elevator", "elevator safety warning sticker", "elevator safety notice",
     "painted zebra-striped pedestrian crossing on a road",
     "white parallel pedestrian crossing stripes painted on asphalt",
-    "partly occluded zebra crossing on a road",
-    "visible pedestrian crossing stripes partly blocked by objects",
 ]
 
 # 교통 전용 프롬프트 목록은 참고용이며, 실행 중에는 전체 PROMPTS를 고정 사용한다.
@@ -306,8 +326,6 @@ TRAFFIC_PROMPTS = [
     MOTORCYCLE_PROMPT, "motorcycle",
     "painted zebra-striped pedestrian crossing on a road",
     "white parallel pedestrian crossing stripes painted on asphalt",
-    "partly occluded zebra crossing on a road",
-    "visible pedestrian crossing stripes partly blocked by objects",
 ]
 
 DOOR_LABELS = {
@@ -322,7 +340,7 @@ DOOR_LABELS = {
     "glass panel door", "framed glass door", "glass door with metal frame",
     "transparent sliding glass door", "sliding glass entrance door",
     "front view of a glass door", "glass door at a building entrance",
-    "automatic glass door", *STEEL_DOOR_LABELS,
+    "automatic glass door", *GLASS_DOOR_LABELS, *STEEL_DOOR_LABELS,
     "storefront entrance door with glass panels and visible door handles",
     "glass entry door in a building entrance frame",
     "outside view of a glass entrance doorway with door handles",
@@ -333,7 +351,8 @@ DOOR_COMPONENT_LABELS = {
     "lever door handle", "door handle mounted on a door",
     "door lever handle on a door", "metal handle attached to a door",
     "door knob mounted on a door", "pull handle", "pull door handle",
-    "sliding glass door handle", "push bar",
+    "sliding glass door handle", "vertical pull handle on a glass door",
+    "metal pull handle on a glass door", "handle on a transparent glass door", "push bar",
     "door push button", "recessed door handle",
     *DOOR_LOCK_LABELS,
 }
@@ -341,7 +360,9 @@ DOOR_COMPONENT_LABELS = {
 STAIR_LABELS = {
     "stairs", "staircase", "stairway steps", "stair steps on a staircase",
     "indoor staircase with visible steps", "staircase with visible steps",
-    "stairs with visible steps", "stair landing",
+    "stairs with visible steps", "downward stairs", "down staircase",
+    "descending staircase", "stairs going down", "staircase descending from above",
+    "stair landing",
 }
 # 버튼 프롬프트는 제거한다. 현재 모델에서는 일반 표지판·벽면·문손잡이를
 # 버튼으로 오인할 가능성이 커서, 엘리베이터가 확정된 뒤에도 버튼 안내를 하지 않는다.
@@ -356,8 +377,6 @@ ELEVATOR_SUPPORT_LABELS = {
 CROSSWALK_LABELS = {
     "painted zebra-striped pedestrian crossing on a road",
     "white parallel pedestrian crossing stripes painted on asphalt",
-    "partly occluded zebra crossing on a road",
-    "visible pedestrian crossing stripes partly blocked by objects",
 }
 VEHICLE_LABELS = {
     CAR_PROMPT, CAR_DISTANT_PROMPT, CAR_FAR_PROMPT,
@@ -1159,16 +1178,16 @@ def valid_geometry(det, width, height):
     if label in BED_LABELS:
         # 벽 타일/벽면을 침대로 오인하는 경우를 줄이기 위해 더 큰 박스와
         # 화면 하단까지 이어지는 침대 형태만 후보로 허용한다.
-        return (area_ratio >= 0.045 and bw >= width * 0.28
-                and bh >= height * 0.15 and y2 >= height * 0.72
-                and (y1 + y2) / 2 >= height * 0.48
-                and 0.95 <= aspect <= 3.8)
+        return (area_ratio >= 0.045 and area_ratio <= 0.58
+                and bw >= width * 0.28 and bh >= height * 0.15
+                and y2 >= height * 0.82 and y1 >= height * 0.08
+                and (y1 + y2) / 2 >= height * 0.52
+                and 0.95 <= aspect <= 3.4)
     if label in CROSSWALK_LABELS:
-        # 작고 애매한 도로/계단 무늬 오인식을 줄이기 위해 실제 표시가
-        # 일정 면적과 가로·세로 크기로 검출된 경우만 횡단보도 후보로 인정한다.
-        # 일부가 가려져 줄무늬 조각만 보여도 횡단보도 후보로 유지한다.
-        return (area_ratio >= 0.00035 and bw >= width * 0.05
-                and bh >= height * 0.012)
+        # 일반 타일·카펫·평행선 무늬가 횡단보도로 오인되는 것을 줄인다.
+        # 도로 위 넓은 줄무늬 영역으로 보일 만큼의 가로세로 크기를 요구한다.
+        return (area_ratio >= 0.006 and bw >= width * 0.16
+                and bh >= height * 0.035 and aspect >= 1.35)
     if label in DOOR_LABELS:
         # 정면 유리문은 투명해 박스가 작고 얇게 잡힐 수 있다.
         if label in GLASS_DOOR_LABELS or label in {
@@ -1210,6 +1229,9 @@ def guidance_for_detection(det, width):
 
     if label in {"doorknob", "door knob", "door knob mounted on a door"}:
         return f"{pos} 문고리. 돌려 여세요."
+    if label in {"sliding glass door handle", "vertical pull handle on a glass door",
+                 "metal pull handle on a glass door", "handle on a transparent glass door"}:
+        return f"{pos} 유리문 손잡이"
     if label in {"door handle", "lever handle", "lever door handle",
                  "door handle mounted on a door", "door lever handle on a door",
                  "metal handle attached to a door"}:
@@ -1294,8 +1316,11 @@ class SituationMachine:
                 self.count = 1
                 self.forced = False
                 return self.state
+        elif self.state != "CROSSWALK":
+            # 아직 모드에 진입하기 전의 단발 오검출은 누적하지 않는다.
+            self.crosswalk_candidate_since = None
+            self.last_crosswalk_time = None
         elif self.crosswalk_candidate_since is not None:
-            # 한두 프레임의 검출 흔들림은 같은 확인 구간으로 허용한다.
             if (self.last_crosswalk_time is None
                     or now - self.last_crosswalk_time > CROSSWALK_DETECTION_GAP_SECONDS):
                 self.crosswalk_candidate_since = None
@@ -1958,6 +1983,7 @@ class DoorNoticeOCR:
         self.last_submit = 0.0
         self.last_spoken = {}
         self.thread = None
+        self.stopping = threading.Event()
         if not self.enabled:
             print("문 안내문 OCR: 비활성화 (WALKING_ASSISTANT_OCR=0)")
         elif pytesseract is None:
@@ -2036,10 +2062,13 @@ class DoorNoticeOCR:
                         for image in variants:
                             for psm in (6, 11):
                                 text_parts.append(pytesseract.image_to_string(
-                                    image, lang=self.ocr_lang, config=f"--psm {psm}"
+                                    image, lang=self.ocr_lang, config=f"--psm {psm}", timeout=4
                                 ))
                     except Exception as exc:
-                        print("문 안내문 OCR 오류:", exc)
+                        # 사용자가 Ctrl+C로 종료 중이면 Tesseract 자식 프로세스가
+                        # -2(SIGINT)로 끝날 수 있다. 종료 과정의 잡음 로그는 생략한다.
+                        if not self.stopping.is_set() and "-2" not in str(exc):
+                            print("문 안내문 OCR 오류:", exc, flush=True)
                         continue
                     text = " ".join(text_parts)
                     if os.getenv("WALKING_ASSISTANT_OCR_DEBUG", "0").strip().lower() in {"1", "true", "yes"}:
@@ -2048,7 +2077,7 @@ class DoorNoticeOCR:
                     notice = None
                     if any(token in compact for token in ("당기세요", "당기시오", "당기", "당겨", "잡아당기")):
                         notice = "당기세요"
-                    elif any(token in compact for token in ("미세요", "미시오", "미시", "밀어", "미는")):
+                    elif any(token in compact for token in ("미세요", "미시오", "미시", "밀어", "밀어주세요", "미는")):
                         notice = "미세요"
                     if notice:
                         now = time.monotonic()
@@ -2059,6 +2088,7 @@ class DoorNoticeOCR:
                 self.jobs.task_done()
 
     def close(self):
+        self.stopping.set()
         self.running = False
         if self.thread is not None:
             self.thread.join(timeout=1.0)
@@ -2152,7 +2182,7 @@ def main():
     model = YOLOE(MODEL_PATH)
     # YOLOE 텍스트 프롬프트 임베딩을 저장해 두면 이후 실행 때
     # set_classes()의 텍스트 인코더 초기화/다운로드를 반복하지 않는다.
-    prompt_embeddings_path = Path(__file__).resolve().parent / "prompt_embeddings_v7.npz"
+    prompt_embeddings_path = Path(__file__).resolve().parent / "prompt_embeddings_v8.npz"
     embeddings_loaded = False
     if prompt_embeddings_path.is_file():
         try:
@@ -2306,11 +2336,20 @@ def main():
                 crosswalk_vehicles = deduplicate_vehicle_detections(crosswalk_vehicles)
                 all_dets = deduplicate_detections(all_dets)
                 hanger_dets = [d for d in all_dets if d[0] in HANGER_LABELS]
-                if hanger_dets:
+                railing_dets = [d for d in all_dets if d[0] in RAILING_LABELS]
+                if hanger_dets or railing_dets:
                     all_dets = [
                         d for d in all_dets
-                        if d[0] != "bicycle"
-                        or not any(box_overlap_ratio(d, hanger) >= 0.25 for hanger in hanger_dets)
+                        if not (
+                            d[0] in HANGER_LABELS and any(
+                                box_overlap_ratio(d, rail) >= 0.25 for rail in railing_dets
+                            )
+                        )
+                        and not (
+                            d[0] == "bicycle" and any(
+                                box_overlap_ratio(d, hanger) >= 0.25 for hanger in hanger_dets
+                            )
+                        )
                     ]
 
                 # 엘리베이터 자체 또는 문에 붙은 안전 경고 스티커가
