@@ -135,10 +135,37 @@ GLASS_DOOR_LABELS = {
     "transparent sliding glass door", "sliding glass entrance door",
     "front view of a glass door", "glass door at a building entrance",
     "automatic glass door",
+    "glass entrance door viewed from outside with a doorway and frame",
+    "exterior glass entrance door with visible door frame",
+    "storefront glass entrance door viewed from outside",
+    "commercial building glass entry door with a visible doorway",
+    "outside view of transparent sliding glass entrance door",
 }
 
+BED_LABELS = {
+    "bed with mattress and pillow", "bed with visible mattress in a bedroom",
+    "bed frame with mattress and pillows",
+}
+DOOR_LOCK_LABELS = {
+    "door lock", "door lock with handle", "keypad door lock",
+    "electronic keypad door lock", "deadbolt lock on a door", "door lever lock",
+}
+WINDOW_LABELS = {"window", "glass window", "building window", "exterior window"}
+STEEL_DOOR_LABELS = {"steel door", "metal door", "metal entrance door", "metal security door"}
+
 CLASS_MIN_CONF = {
-    "bed": 0.48,
+    "bed with mattress and pillow": 0.44,
+    "bed with visible mattress in a bedroom": 0.44,
+    "bed frame with mattress and pillows": 0.46,
+    "refrigerator": 0.46,
+    "window": 0.38,
+    "glass window": 0.40,
+    "building window": 0.40,
+    "exterior window": 0.42,
+    "steel door": 0.30,
+    "metal door": 0.30,
+    "metal entrance door": 0.30,
+    "metal security door": 0.32,
     "table": 0.28,
     "desk": 0.26,
     "chair": 0.48,
@@ -187,6 +214,7 @@ CLASS_MIN_CONF = {
     "sliding glass door handle": 0.44,
     "automatic door": 0.28,
     "glass door": 0.28,
+    "glass entrance door with a visible doorway": 0.36,
     "hinged door": 0.28,
     "elevator": ELEVATOR_MIN_CONF,
     "elevator safety warning sticker": ELEVATOR_STICKER_MIN_CONF,
@@ -203,21 +231,49 @@ CLASS_MIN_CONF = {
     "sliding glass door handle": 0.52,
     "push bar": 0.68,
     "door push button": 0.70,
-    "recessed door handle": 0.56,
-    **{label: 0.18 for label in GLASS_DOOR_LABELS},
+    "recessed door handle": 0.62,
+    "doorknob": 0.68,
+    "door knob": 0.68,
+    "door handle": 0.62,
+    "lever handle": 0.62,
+    "lever door handle": 0.62,
+    "pull handle": 0.62,
+    "pull door handle": 0.62,
+    "sliding glass door handle": 0.64,
+    "door lock": 0.68,
+    "door lock with handle": 0.68,
+    "keypad door lock": 0.68,
+    "electronic keypad door lock": 0.70,
+    "deadbolt lock on a door": 0.70,
+    "door lever lock": 0.68,
+    **{label: 0.36 for label in GLASS_DOOR_LABELS},
 }
 
 AUDIO_DIR = "audio"
 
 PROMPTS = [
-    "box", "desk", "table", "chair", "bed", "shelf", "wardrobe",
-    "refrigerator", "tree", CAR_PROMPT, "car", SCOOTER_PROMPT, "scooter",
+    "box", "desk", "table", "chair",
+    "bed with mattress and pillow", "bed with visible mattress in a bedroom",
+    "bed frame with mattress and pillows", "shelf", "wardrobe",
+    "refrigerator", "window", "glass window", "building window", "exterior window",
+    "tree", CAR_PROMPT, "car", SCOOTER_PROMPT, "scooter",
     MOTORCYCLE_PROMPT, "motorcycle", "bollard", "traffic cone",
     "utility pole", "bicycle", "person", "curb", "railing", "guardrail",
     "door", "entrance door", "interior door", "wooden door", "closed door", "open door",
+    "steel door", "metal door", "metal entrance door", "metal security door",
     "sliding door", "glass sliding door", "sliding glass door",
-    "automatic door", "glass door", "hinged door", "door handle", "doorknob",
-    "lever handle", "pull handle", "push bar", "stairs", "staircase",
+    "automatic door", "glass entrance door with a visible doorway", "hinged door",
+    "glass entrance door viewed from outside with a doorway and frame",
+    "exterior glass entrance door with visible door frame",
+    "storefront glass entrance door viewed from outside",
+    "commercial building glass entry door with a visible doorway",
+    "outside view of transparent sliding glass entrance door",
+    "door handle", "doorknob", "door knob", "lever handle", "lever door handle",
+    "pull handle", "pull door handle", "sliding glass door handle",
+    "recessed door handle", "push bar",
+    "door lock", "door lock with handle", "keypad door lock",
+    "electronic keypad door lock", "deadbolt lock on a door", "door lever lock",
+    "stairs", "staircase",
     "stairway steps", "stair steps on a staircase",
     "indoor staircase with visible steps", "staircase with visible steps",
     "stairs with visible steps", "elevator", "elevator safety warning sticker", "elevator safety notice",
@@ -246,7 +302,12 @@ DOOR_LABELS = {
     "glass panel door", "framed glass door", "glass door with metal frame",
     "transparent sliding glass door", "sliding glass entrance door",
     "front view of a glass door", "glass door at a building entrance",
-    "automatic glass door",
+    "automatic glass door", *STEEL_DOOR_LABELS,
+    "glass entrance door with a visible doorway",
+    "glass entrance door viewed from outside with a doorway and frame", "exterior glass entrance door with visible door frame",
+    "storefront glass entrance door viewed from outside",
+    "commercial building glass entry door with a visible doorway",
+    "outside view of transparent sliding glass entrance door",
 }
 
 DOOR_COMPONENT_LABELS = {
@@ -254,6 +315,7 @@ DOOR_COMPONENT_LABELS = {
     "lever door handle", "pull handle", "pull door handle",
     "sliding glass door handle", "push bar",
     "door push button", "recessed door handle",
+    *DOOR_LOCK_LABELS,
 }
 
 STAIR_LABELS = {
@@ -298,11 +360,21 @@ KOREAN_LABELS = {
     "desk": "책상",
     "table": "테이블",
     "chair": "의자",
-    "bed": "침대",
+    "bed with mattress and pillow": "침대",
+    "bed with visible mattress in a bedroom": "침대",
+    "bed frame with mattress and pillows": "침대",
     "shelf": "선반",
     "wardrobe": "옷장",
     "closet": "옷장",
     "refrigerator": "냉장고",
+    "window": "창문",
+    "glass window": "창문",
+    "building window": "창문",
+    "exterior window": "창문",
+    "steel door": "철문",
+    "metal door": "철문",
+    "metal entrance door": "철제 출입문",
+    "metal security door": "철제 보안문",
     "tree": "나무",
     "car": "차량",
     CAR_PROMPT: "차량",
@@ -340,6 +412,12 @@ KOREAN_LABELS = {
     "push bar": "푸시바",
     "door push button": "문 버튼",
     "recessed door handle": "매립 손잡이",
+    "door lock": "도어락",
+    "door lock with handle": "손잡이형 도어락",
+    "keypad door lock": "번호판 도어락",
+    "electronic keypad door lock": "전자식 번호판 도어락",
+    "deadbolt lock on a door": "도어 잠금장치",
+    "door lever lock": "레버형 도어락",
     "entrance door": "출입문",
     "interior door": "실내 문",
     "wooden door": "나무 문",
@@ -584,6 +662,7 @@ class Speech:
         self.last_urgent_key = None
         self.last_urgent_submit = 0.0
         self.current_text = None
+        self.interrupted_texts = set()
         # 대기 안내를 쌓아 오래된 음성이 뒤늦게 나오는 현상을 막는다.
         self.jobs = queue.Queue(maxsize=1)
         self.stopping = threading.Event()
@@ -773,6 +852,8 @@ class Speech:
                 self._play_piper(text)
                 return
             except Exception as exc:
+                if self.current_text in self.interrupted_texts:
+                    return
                 print(f"Piper 재생 실패, eSpeak로 대체합니다: {exc}", flush=True)
         if self.espeak:
             try:
@@ -794,15 +875,18 @@ class Speech:
             try:
                 self._speak(text)
             finally:
+                self.interrupted_texts.discard(text)
                 self.current_text = None
 
     def _queue_audio(self, text, urgent=False):
         if (self.piper_voice is None and not self.espeak) or self.stopping.is_set():
             return
-        if urgent:
-            # 같은 정지 문구가 이미 재생 중이면 재생을 끊거나 다시 큐에 넣지 않는다.
-            if self.current_text == text:
+        if urgent or (self.current_text is not None and self.current_text != text):
+            # 긴급 안내 또는 새 대상이 오면 이전 음성을 끊어 늦은 안내가 밀리지 않게 한다.
+            if urgent and self.current_text == text:
                 return
+            if self.current_text is not None and self.current_text != text:
+                self.interrupted_texts.add(self.current_text)
             with self.process_lock:
                 for proc in tuple(self.active_processes):
                     if proc.poll() is None:
@@ -855,6 +939,15 @@ class Speech:
         self.last_submit_time = time.time()
         print(f"[긴급 결과] {text}", flush=True)
         self._queue_audio(text, urgent=True)
+
+    def wait_until_idle(self, timeout=8.0):
+        """대기 중인 종료 안내가 재생을 마칠 때까지 제한 시간 동안 기다린다."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            if self.current_text is None and self.jobs.empty():
+                return True
+            time.sleep(0.05)
+        return False
 
     def cancel(self):
         with self.process_lock:
@@ -1015,6 +1108,16 @@ def class_min_conf(label):
     return CLASS_MIN_CONF.get(label, CONFIDENCE)
 
 
+def box_overlap_ratio(a, b):
+    """교차 영역을 더 작은 박스 면적으로 나눈 중첩 비율."""
+    ax1, ay1, ax2, ay2 = a[2:6]
+    bx1, by1, bx2, by2 = b[2:6]
+    inter = max(0, min(ax2, bx2) - max(ax1, bx1)) * max(0, min(ay2, by2) - max(ay1, by1))
+    area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
+    area_b = max(1, (bx2 - bx1) * (by2 - by1))
+    return inter / min(area_a, area_b)
+
+
 def valid_geometry(det, width, height):
     """클래스별 최소 크기·종횡비 필터. 작은 점/벽면 반사를 제거한다."""
     label, _, x1, y1, x2, y2 = det
@@ -1027,10 +1130,11 @@ def valid_geometry(det, width, height):
         # 원거리 차량/오토바이는 박스가 작으므로 일반 사물보다 작은 크기까지 허용
         return (bw >= 5 and bh >= 5 and area_ratio >= 0.00005
                 and area_ratio <= 0.45 and 0.18 <= aspect <= 8.0)
-    if label == "bed":
-        # 침대 오인식을 줄이기 위해 높은 신뢰도와 더 큰 박스 크기를 요구
-        return (area_ratio >= 0.02 and bw >= width * 0.14
-                and bh >= height * 0.08 and aspect <= 5.5)
+    if label in BED_LABELS:
+        # 단순 각진 물체를 침대로 보는 오탐은 줄이고, 매트리스/베개가 보이는
+        # 구체 프롬프트는 실제 침대의 원근·크기 차이를 고려해 약간 완화한다.
+        return (area_ratio >= 0.032 and bw >= width * 0.18
+                and bh >= height * 0.09 and 0.80 <= aspect <= 4.2)
     if label in CROSSWALK_LABELS:
         # 작고 애매한 도로/계단 무늬 오인식을 줄이기 위해 실제 표시가
         # 일정 면적과 가로·세로 크기로 검출된 경우만 횡단보도 후보로 인정한다.
@@ -1050,7 +1154,9 @@ def valid_geometry(det, width, height):
     if label in ELEVATOR_SUPPORT_LABELS:
         return area_ratio >= 0.00015 and area_ratio <= 0.08
     if label in DOOR_COMPONENT_LABELS:
-        return area_ratio <= 0.035 and bw >= 6 and bh >= 6
+        if label in DOOR_LOCK_LABELS:
+            return 0.00015 <= area_ratio <= 0.06 and bw >= 8 and bh >= 8
+        return 0.00008 <= area_ratio <= 0.035 and bw >= 6 and bh >= 6
     if label in STAIR_LABELS:
         return area_ratio >= STAIR_MIN_AREA_RATIO or bw >= width * STAIR_MIN_WIDTH_RATIO
     return area_ratio >= 0.0002
@@ -1074,19 +1180,23 @@ def guidance_for_detection(det, width):
     pos = zone(x1, x2, width)
 
     if label in {"doorknob", "door knob"}:
-        return f"{pos} 문고리. 돌려서 여세요."
+        return f"{pos} 문고리. 돌려 여세요."
     if label in {"door handle", "lever handle", "lever door handle"}:
-        return f"{pos} 레버 손잡이. 아래로 눌러 여세요."
+        return f"{pos} 레버. 아래로 누르세요."
     if label == "sliding glass door handle":
-        return f"{pos} 유리 미닫이문 손잡이. 잡고 옆으로 여세요."
+        return f"{pos} 유리문 손잡이. 옆으로 여세요."
     if label in {"pull handle", "pull door handle"}:
-        return f"{pos} 당김 손잡이. 당겨서 여세요."
+        return f"{pos} 손잡이. 당기세요."
     if label == "recessed door handle":
-        return f"{pos} 매립 손잡이. 잡고 밀어 여세요."
+        return f"{pos} 매립 손잡이. 미세요."
     if label == "door push button":
         return f"{pos} 문 버튼. 눌러서 여세요."
+    if label in DOOR_LOCK_LABELS:
+        if label in {"keypad door lock", "electronic keypad door lock"}:
+            return f"{pos} 번호판 도어락. 손잡이 확인."
+        return f"{pos} 도어락. 손잡이 확인."
     if label == "push bar":
-        return f"{pos} 푸시바. 앞으로 미세요."
+        return f"{pos} 푸시바. 미세요."
 
     sliding_glass_labels = {
         "glass sliding door", "sliding glass door",
@@ -1095,20 +1205,20 @@ def guidance_for_detection(det, width):
         "transparent sliding glass door", "sliding glass entrance door",
     }
     if label in GLASS_DOOR_LABELS and label not in sliding_glass_labels:
-        return f"{pos} 유리문. 손잡이를 확인하세요."
+        return f"{pos} 유리문. 손잡이 확인."
 
     door_text = {
-        "sliding door": "미닫이문. 손잡이를 잡고 옆으로 여세요.",
-        "glass sliding door": "수동 유리 미닫이문. 손잡이를 잡고 옆으로 여세요.",
-        "sliding glass door": "수동 유리 미닫이문. 손잡이를 잡고 옆으로 여세요.",
-        "front view of a glass sliding door": "수동 유리 미닫이문. 손잡이를 잡고 옆으로 여세요.",
-        "front facing glass sliding door": "수동 유리 미닫이문. 손잡이를 잡고 옆으로 여세요.",
-        "sliding glass door viewed straight on": "수동 유리 미닫이문. 손잡이를 잡고 옆으로 여세요.",
-        "transparent sliding glass entrance door": "수동 유리 미닫이문. 손잡이를 잡고 옆으로 여세요.",
-        "automatic door": "자동문. 잠시 기다리세요.",
-        "glass door": "유리문. 손잡이를 확인하세요.",
-        "hinged door": "여닫이문. 당기거나 미세요.",
-        "door": "문. 손잡이를 당기거나 미세요.",
+        "sliding door": "미닫이문. 옆으로 여세요.",
+        "glass sliding door": "수동 유리 미닫이문. 옆으로 여세요.",
+        "sliding glass door": "수동 유리 미닫이문. 옆으로 여세요.",
+        "front view of a glass sliding door": "수동 유리 미닫이문. 옆으로 여세요.",
+        "front facing glass sliding door": "수동 유리 미닫이문. 옆으로 여세요.",
+        "sliding glass door viewed straight on": "수동 유리 미닫이문. 옆으로 여세요.",
+        "transparent sliding glass entrance door": "수동 유리 미닫이문. 옆으로 여세요.",
+        "automatic door": "자동문. 기다리세요.",
+        "glass door": "유리문. 손잡이 확인.",
+        "hinged door": "여닫이문. 손잡이 확인.",
+        "door": "문. 손잡이 확인.",
     }
 
     if label in door_text:
@@ -1992,7 +2102,7 @@ def main():
     model = YOLOE(MODEL_PATH)
     # YOLOE 텍스트 프롬프트 임베딩을 저장해 두면 이후 실행 때
     # set_classes()의 텍스트 인코더 초기화/다운로드를 반복하지 않는다.
-    prompt_embeddings_path = Path(__file__).resolve().parent / "prompt_embeddings_v2.npz"
+    prompt_embeddings_path = Path(__file__).resolve().parent / "prompt_embeddings_v4.npz"
     embeddings_loaded = False
     if prompt_embeddings_path.is_file():
         try:
@@ -2161,25 +2271,45 @@ def main():
 
                 elevator_components = []
 
+                window_dets = [d for d in all_dets if d[0] in WINDOW_LABELS]
                 raw_doors = [
                     d for d in all_dets
                     if d[0] in DOOR_LABELS
                     and d[1] >= DOOR_MIN_CONF
+                    and not (
+                        (d[0] in GLASS_DOOR_LABELS or "glass" in d[0])
+                        and any(box_overlap_ratio(d, window) >= 0.30 for window in window_dets)
+                    )
                     and not near_elevator(d)
                 ]
                 confirmed_doors = door_confirm.update(raw_doors)
 
                 valid_components = door_component_confirm.update(all_dets, confirmed_doors)
 
+                furniture_labels = {"refrigerator", "wardrobe", "closet"}
+                door_conflicts = [
+                    d for d in all_dets
+                    if d[0] in DOOR_LABELS and d[1] >= DOOR_MIN_CONF
+                ]
                 filtered = [
                     d for d in all_dets
-                    if d in confirmed_doors
-                    or d in valid_components
-                    or d in confirmed_elevators
-                    or d in elevator_components
-                    or d[0] not in (
-                        DOOR_LABELS | DOOR_COMPONENT_LABELS | ELEVATOR_LABELS
-                        | ELEVATOR_COMPONENT_LABELS | ELEVATOR_SUPPORT_LABELS
+                    if not (
+                        d[0] in furniture_labels
+                        and any(
+                            box_overlap_ratio(d, door) >= 0.25
+                            and door[1] >= d[1] - 0.12
+                            for door in door_conflicts
+                        )
+                    )
+                    and (
+                        d in confirmed_doors
+                        or d in valid_components
+                        or d in confirmed_elevators
+                        or d in elevator_components
+                        or d[0] not in (
+                            DOOR_LABELS | DOOR_COMPONENT_LABELS | ELEVATOR_LABELS
+                            | ELEVATOR_COMPONENT_LABELS | ELEVATOR_SUPPORT_LABELS
+                        )
                     )
                 ]
                 confirmed_stairs = stair_confirm.update(all_dets, w, h)
@@ -2388,6 +2518,9 @@ def main():
         door_ocr.close()
         shutdown_button.close()
         ultrasonic.close()
+        if shutdown_requested.is_set():
+            speech.say_urgent("device_shutdown", "기기가 종료됩니다")
+            speech.wait_until_idle(timeout=8.0)
         speech.close()
         cap.release()
         if debug_display_active:
