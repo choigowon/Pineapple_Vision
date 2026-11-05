@@ -161,6 +161,9 @@ HANDLE_TYPE_LABELS = {
 LOCK_TYPE_LABELS = {"fingerprint door lock", "smart door lock with keypad"}
 
 CLASS_MIN_CONF = {
+    # ------------------------------------------------------------------
+    # 1. 가구 및 기타 기본 설정 (기존 유지)
+    # ------------------------------------------------------------------
     "bed with mattress and pillow": 0.50,
     "bed with visible mattress, pillow and blanket in a bedroom": 0.48,
     "tiled wall": 0.42,
@@ -182,27 +185,41 @@ CLASS_MIN_CONF = {
     "glass window": 0.40,
     "building window": 0.40,
     "exterior window": 0.42,
-    "steel door": 0.30,
-    "metal door": 0.30,
-    "metal entrance door": 0.30,
-    "metal security door": 0.32,
-    "steel entrance door with visible handle": 0.30,
-    "metal security door in building entrance": 0.30,
-    "closed metal entrance door": 0.30,
-    "metal door with a handle": 0.30,
-    "glass entrance door with visible handle": 0.30,
-    "transparent glass door in a metal frame": 0.30,
-    "glass door panel with vertical pull handle": 0.30,
-    **{label: 0.30 for label in GLASS_DOOR_LABELS},
     "desk": 0.40,
     "chair": 0.48,
-    "painted zebra-striped pedestrian crossing on a road": CROSSWALK_MIN_CONF,
-    "zebra crossing painted on asphalt": CROSSWALK_MIN_CONF,
-    "pedestrian crosswalk with white stripes on a road": CROSSWALK_MIN_CONF,
-    "zebra crossing on a street": CROSSWALK_MIN_CONF,
-    "white zebra stripes at a pedestrian crossing": CROSSWALK_MIN_CONF,
-    "zebra crossing with broad white stripes across a road": CROSSWALK_MIN_CONF,
-    "marked pedestrian crossing with repeated zebra stripes": CROSSWALK_MIN_CONF,
+
+    # ------------------------------------------------------------------
+    # 2. 문 (종류별 최적 신뢰도 적용)
+    # ------------------------------------------------------------------
+    "door": 0.22,
+    "wooden door": 0.30,
+    "steel door": 0.40,
+    "glass entrance door": 0.30,
+    "sliding glass door": 0.22,
+    "automatic glass door": 0.25,
+
+    # ------------------------------------------------------------------
+    # 3. 문손잡이 & 도어락 (과인식 차단을 위한 적정 임계값 설정)
+    # ------------------------------------------------------------------
+    "door handle": 0.35,
+    "doorknob": 0.35,
+    "lever door handle": 0.35,
+    "door knob": 0.35,
+    "push bar": 0.48,                  # 푸시바 과인식 방지를 위해 살짝 상향
+    "door push button": 0.42,
+    "electronic keypad door lock": 0.33,
+    "door lock": 0.35,
+
+    # ------------------------------------------------------------------
+    # 4. 횡단보도 (새로 설정한 3개 프롬프트에 매핑)
+    # ------------------------------------------------------------------
+    "pedestrian crosswalk with wide white stripes across a road": CROSSWALK_MIN_CONF,
+    "marked zebra pedestrian crossing painted on asphalt road": CROSSWALK_MIN_CONF,
+    "pedestrian crosswalk zone on street asphalt": CROSSWALK_MIN_CONF,
+
+    # ------------------------------------------------------------------
+    # 5. 차량, 계단, 엘리베이터 등 (기존 유지)
+    # ------------------------------------------------------------------
     CAR_PROMPT: 0.17,
     CAR_DISTANT_PROMPT: 0.15,
     CAR_FAR_PROMPT: 0.15,
@@ -238,57 +255,11 @@ CLASS_MIN_CONF = {
     "stairs going down": 0.32,
     "staircase descending from above": 0.32,
     "stair landing": 0.46,
-    "door": 0.24,
-    "entrance door": 0.24,
-    "interior door": 0.24,
-    "wooden door": 0.24,
-    "closed door": 0.24,
-    "open door": 0.24,
-    "sliding door": 0.28,
-    "glass sliding door": 0.26,
-    "sliding glass door": 0.26,
-    "automatic glass sliding door": 0.34,
-    "hinged glass door with a frame": 0.36,
-    "glass hinged entrance door": 0.36,
-    "manual sliding glass door": 0.34,
-    "glass door with a vertical pull handle": 0.38,
-    "fingerprint door lock": 0.40,
-    "smart door lock with keypad": 0.40,
-    "round doorknob on a door": 0.20,
-    "lever door handle attached to a door": 0.18,
-    "recessed handle on a sliding glass door": 0.20,
-    "push bar on a commercial door": 0.22,
-    "front view of a glass sliding door": 0.24,
-    "front facing glass sliding door": 0.24,
-    "sliding glass door viewed straight on": 0.24,
-    "transparent sliding glass entrance door": 0.24,
-    "sliding glass door handle": 0.18,
-    "automatic door": 0.28,
-    "glass door": 0.28,
-    "hinged door": 0.22,
     "elevator": ELEVATOR_MIN_CONF,
     "elevator safety warning sticker": ELEVATOR_STICKER_MIN_CONF,
     "do not lean on elevator door sticker": ELEVATOR_STICKER_MIN_CONF,
     "fall hazard sticker on elevator door": ELEVATOR_STICKER_MIN_CONF,
     "elevator safety notice": ELEVATOR_STICKER_MIN_CONF,
-    "doorknob": 0.20,
-    "door knob": 0.20,
-    "door handle": 0.18,
-    "lever handle": 0.18,
-    "lever door handle": 0.18,
-    "door handle mounted on a door": 0.18,
-    "door lever handle on a door": 0.18,
-    "metal handle attached to a door": 0.18,
-    "door knob mounted on a door": 0.20,
-    "push bar": 0.22,
-    "door push button": 0.22,
-    "recessed door handle": 0.20,
-    "door lock": 0.35,
-    "door lock with handle": 0.35,
-    "keypad door lock": 0.30,
-    "electronic keypad door lock": 0.30,
-    "deadbolt lock on a door": 0.40,
-    "door lever lock": 0.35,
 }
 
 PROMPTS = [
@@ -306,22 +277,31 @@ PROMPTS = [
     MOTORCYCLIST_PROMPT, "motorcycle", "bollard",
     "utility pole", "bicycle", "person", "curb", "railing", "guardrail",
     "door", "entrance door", "interior door", "wooden door", "closed door", "open door",
-    *sorted(STEEL_DOOR_LABELS),
-    "sliding door", "glass sliding door", "sliding glass door",
-    "automatic door", "hinged door", *sorted(GLASS_DOOR_TYPE_LABELS),
-    *sorted(GLASS_DOOR_LABELS),
-    "storefront entrance door with glass panels and visible door handles",
-    "glass entry door in a building entrance frame",
-    "outside view of a glass entrance doorway with door handles",
-    "glass door with a vertical metal handle",
-    "transparent glass entrance door with a visible handle",
-    "door handle", "doorknob", "door knob", "lever handle", "lever door handle",
-    *sorted(HANDLE_TYPE_LABELS), *sorted(LOCK_TYPE_LABELS),
-    "door handle mounted on a door", "door lever handle on a door",
-    "metal handle attached to a door", "door knob mounted on a door",
-    "push bar", "push bar on a commercial door",
-    "door lock", "door lock with handle", "keypad door lock",
-    "electronic keypad door lock", "deadbolt lock on a road", "door lever lock",
+    # ------------------------------------------------------------------
+    # 1. 문 (종류 구분이 잘 되도록 수식어 정리 및 직관적 프롬프트 구성)
+    # ------------------------------------------------------------------
+    "door", 
+    "wooden door", 
+    "steel door", 
+    "glass entrance door", 
+    "sliding glass door", 
+    "automatic glass door",
+
+    # ------------------------------------------------------------------
+    # 2. 문손잡이 & 도어락 (과인식 유발 문장 제거 / 적정 가짓수 유지)
+    # ------------------------------------------------------------------
+    "door handle", 
+    "doorknob", 
+    "lever door handle", 
+    "door knob",
+    "push bar on a door", 
+    "automatic door push button",
+    "electronic keypad door lock",
+    "door lock",
+
+    # ------------------------------------------------------------------
+    # 3. 계단 & 엘리베이터 (기존 유지)
+    # ------------------------------------------------------------------
     "stairs", "staircase",
     "stairway steps", "stair steps on a staircase",
     "indoor staircase with visible steps", "staircase with visible steps",
@@ -333,13 +313,13 @@ PROMPTS = [
     "downward stairs", "down staircase", "descending staircase",
     "stairs going down", "staircase descending from above",
     "elevator", "elevator safety warning sticker", "elevator safety notice",
-    "painted zebra-striped pedestrian crossing on a road",
-    "zebra crossing painted on asphalt",
-    "pedestrian crosswalk with white stripes on a road",
-    "zebra crossing on a street",
-    "white zebra stripes at a pedestrian crossing",
-    "zebra crossing with broad white stripes across a road",
-    "marked pedestrian crossing with repeated zebra stripes",
+
+    # ------------------------------------------------------------------
+    # 4. 횡단보도 (주차선 흰 줄무늬 오탐 방지: 도로 전체 맥락 강조)
+    # ------------------------------------------------------------------
+    "pedestrian crosswalk with wide white stripes across a road",
+    "marked zebra pedestrian crossing painted on asphalt road",
+    "pedestrian crosswalk zone on street asphalt",
 ]
 
 DOOR_LABELS = {
@@ -708,8 +688,8 @@ def shutdown_system():
     except Exception as exc:
         print(f"라즈베리파이 종료 명령 실행 실패: {exc}", flush=True)
 
+# a.py 의 Speech 클래스 대체 부분
 
-# 음성 순차 큐 단일화 (asdf.py 기준 겹침 완전 방지)
 class Speech:
     def __init__(self):
         self.last_key = None
@@ -720,37 +700,24 @@ class Speech:
         self.last_urgent_submit = 0.0
         self.current_text = None
         self.interrupted_texts = set()
-        self.jobs = queue.Queue(maxsize=1)  # 단일 큐로 연속 음성 중첩 차단
+        self.jobs = queue.Queue(maxsize=1)
         self.stopping = threading.Event()
         self.process_lock = threading.Lock()
         self.active_processes = set()
         self.worker = None
-        self.piper_voice = None
+        
         self.aplay = shutil.which("aplay")
         self.alsa_device = os.getenv("WALKING_ASSISTANT_ALSA_DEVICE", "plughw:2,0")
         self.espeak = shutil.which("espeak-ng") or shutil.which("espeak")
-        default_model = Path(__file__).resolve().parent / "voices" / "ko_KR-kss-medium.onnx"
-        self.piper_model = Path(os.getenv("WALKING_ASSISTANT_PIPER_MODEL", str(default_model))).expanduser()
         self.cache_dir = Path(os.getenv(
             "WALKING_ASSISTANT_AUDIO_CACHE",
             str(Path(__file__).resolve().parent / "audio_cache")
         )).expanduser()
 
-        if self.aplay and self.piper_model.is_file():
-            try:
-                from piper import PiperVoice
-                print("오프라인 한국어 Piper 음성 모델 로딩 중...", flush=True)
-                piper_load_started = time.monotonic()
-                self.piper_voice = PiperVoice.load(str(self.piper_model))
-                print(f"Piper 음성 모델 로드 완료: {time.monotonic() - piper_load_started:.1f}초", flush=True)
-                self.cache_dir.mkdir(parents=True, exist_ok=True)
-            except Exception as exc:
-                print(f"Piper 초기화 실패: {exc}", flush=True)
+        # [수정] PiperVoice 모델 로드 로직 제거 (시작 속도 0초 달성)
+        print("음성 출력: 사전 생성된 WAV 캐시 모드 (초기화 지연 0초)", flush=True)
 
-        if self.piper_voice is None and self.espeak:
-            print("음성 출력: 로컬 eSpeak 대체 음성", flush=True)
-
-        if self.piper_voice is not None or self.espeak:
+        if self.aplay or self.espeak:
             self.worker = threading.Thread(target=self._audio_worker, name="speech-audio", daemon=True)
             self.worker.start()
 
@@ -781,45 +748,6 @@ class Speech:
                     with self.process_lock:
                         self.active_processes.discard(proc)
 
-    def _play_piper(self, text):
-        cache_path = self._cache_path_for_text(text)
-        if cache_path.is_file() and cache_path.stat().st_size > 44:
-            self._play_file(cache_path)
-            return
-
-        chunks = iter(self.piper_voice.synthesize(text))
-        first = next(chunks, None)
-        if first is None:
-            return
-        proc = subprocess.Popen(
-            [self.aplay, "-q", "-D", self.alsa_device, "-t", "raw", "-f", "S16_LE",
-             "-r", str(round(first.sample_rate * PIPER_SPEED_FACTOR)),
-             "-c", str(first.sample_channels)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        with self.process_lock:
-            self.active_processes.add(proc)
-        try:
-            assert proc.stdin is not None
-            proc.stdin.write(first.audio_int16_bytes)
-            proc.stdin.flush()
-            for chunk in chunks:
-                if self.stopping.is_set() or proc.poll() is not None:
-                    continue
-                proc.stdin.write(chunk.audio_int16_bytes)
-                proc.stdin.flush()
-        except BrokenPipeError:
-            pass
-        finally:
-            try:
-                proc.stdin.close()
-            except Exception:
-                pass
-            with self.process_lock:
-                self.active_processes.discard(proc)
-
     def _run_espeak(self, text):
         proc = subprocess.Popen(
             [self.espeak, "-v", os.getenv("WALKING_ASSISTANT_ESPEAK_VOICE", "ko"),
@@ -836,12 +764,13 @@ class Speech:
                 self.active_processes.discard(proc)
 
     def _speak(self, text):
-        if self.piper_voice is not None:
-            try:
-                self._play_piper(text)
-                return
-            except Exception:
-                pass
+        cache_path = self._cache_path_for_text(text)
+        # 1. 사전 생성된 WAV 캐시 파일이 있으면 즉시 재생 (지연 0초)
+        if cache_path.is_file() and cache_path.stat().st_size > 44:
+            self._play_file(cache_path)
+            return
+            
+        # 2. 혹시 캐시가 없으면 대체 eSpeak 실행
         if self.espeak:
             try:
                 self._run_espeak(text)
@@ -867,12 +796,14 @@ class Speech:
     def _queue_audio(self, text, urgent=False):
         if not isinstance(text, str) or not text.strip():
             return
-        if (self.piper_voice is None and not self.espeak) or self.stopping.is_set():
+        if self.stopping.is_set():
             return
-        if urgent or (self.current_text is not None and self.current_text != text):
-            if urgent and self.current_text == text:
+
+        # [수정] 긴급 알림(위험/멈추세요)인 경우에만 기존 음성을 끊고 즉시 재생
+        if urgent:
+            if self.current_text == text:
                 return
-            if self.current_text is not None and self.current_text != text:
+            if self.current_text is not None:
                 self.interrupted_texts.add(self.current_text)
             with self.process_lock:
                 for proc in tuple(self.active_processes):
@@ -883,10 +814,16 @@ class Speech:
                     self.jobs.get_nowait()
                 except queue.Empty:
                     break
-        try:
-            self.jobs.get_nowait()
-        except queue.Empty:
-            pass
+            try:
+                self.jobs.put_nowait(text)
+            except queue.Full:
+                pass
+            return
+
+        # [수정] 일반 안내인 경우: 이미 다른 음성이 재생 중이거나 큐에 대기 중이면 끊지 않고 무시 (우르르 쏟아짐 방지)
+        if self.current_text is not None or not self.jobs.empty():
+            return
+
         try:
             self.jobs.put_nowait(text)
         except queue.Full:
@@ -905,9 +842,16 @@ class Speech:
             return
         if self.ultrasonic_suppressed and not key.startswith(("crosswalk_", "traffic_", "stairs:")):
             return
+        
         now = time.time()
-        if not force and key == self.last_key and now - self.last_submit_time < 2.0:
+        # [수정] 일반 안내 간 최소 간격(SPEECH_COOLDOWN)을 2.5초로 늘려 음성 간 격차 확보
+        if not force and key == self.last_key and now - self.last_submit_time < 2.5:
             return
+            
+        # 이미 음성이 재생 중이면 전송하지 않음
+        if self.current_text is not None:
+            return
+
         self.last_key = key
         self.last_submit_time = now
         print(f"[결과] {text}", flush=True)
@@ -1694,7 +1638,7 @@ def main():
     model_load_started = time.monotonic()
     model = YOLOE(MODEL_PATH)
 
-    prompt_embeddings_path = Path(__file__).resolve().parent / "prompt_embeddings_v15.npz"
+    prompt_embeddings_path = Path("/home/pineapple/pi/prompt_embeddings.npz")
     embeddings_loaded = False
     if prompt_embeddings_path.is_file():
         try:
