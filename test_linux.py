@@ -39,10 +39,9 @@ AUTO_CLAHE = os.getenv("WALKING_ASSISTANT_AUTO_CLAHE", "0").strip().lower() in {
 SPEECH_COOLDOWN = 0.22
 URGENT_SPEECH_COOLDOWN = 0.12
 
-# 횡단보도 안전 판단 설정 (asdf.py 기준 인식률 복원)
-CROSSWALK_VEHICLE_MIN_CONF = 0.16
+CROSSWALK_VEHICLE_MIN_CONF = 0.10
 CROSSWALK_CLEAR_SECONDS = 2.0
-CROSSWALK_MIN_CONF = 0.46  # asdf.py 기준 임계값 복원
+CROSSWALK_MIN_CONF = 0.25
 CROSSWALK_ENTER_CONFIRM_SECONDS = 0.4
 CROSSWALK_EXIT_HOLD_SECONDS = 3.0
 CROSSWALK_DETECTION_GAP_SECONDS = 2.0
@@ -88,7 +87,10 @@ ELEVATOR_MIN_AREA_RATIO = 0.08
 ELEVATOR_MIN_WIDTH_RATIO = 0.25
 ELEVATOR_STICKER_MIN_CONF = 0.72
 ELEVATOR_STICKER_CONFIRM_FRAMES = 3
-
+CROSSWALK_PROMPTS = [
+    "zebra pedestrian crossing stripes spanning across a multi-lane road",
+    "white striped pedestrian crosswalk painted on street pavement, not parking lines",
+]
 CAR_PROMPT = "passenger car driving on a road, viewed from a distance"
 SCOOTER_PROMPT = "electric kick scooter on a road"
 MOTORCYCLE_PROMPT = "motorcycle on a road"
@@ -249,10 +251,10 @@ CLASS_MIN_CONF = {
     "flight of stairs": 0.34,
     "stair steps viewed from the front": 0.34,
     "staircase with several visible steps": 0.34,
-    "downward stairs": 0.32,
-    "down staircase": 0.32,
-    "descending staircase": 0.32,
-    "stairs going down": 0.32,
+    "downward stairs": 0.28,
+    "down staircase": 0.28,
+    "descending staircase": 0.28,
+    "stairs going down": 0.28,
     "staircase descending from above": 0.32,
     "stair landing": 0.46,
     "elevator": ELEVATOR_MIN_CONF,
@@ -317,9 +319,7 @@ PROMPTS = [
     # ------------------------------------------------------------------
     # 4. 횡단보도 (주차선 흰 줄무늬 오탐 방지: 도로 전체 맥락 강조)
     # ------------------------------------------------------------------
-    "pedestrian crosswalk with wide white stripes across a road",
-    "marked zebra pedestrian crossing painted on asphalt road",
-    "pedestrian crosswalk zone on street asphalt",
+    *CROSSWALK_PROMPTS,
 ]
 
 DOOR_LABELS = {
@@ -359,15 +359,9 @@ ELEVATOR_SUPPORT_LABELS = {
     "fall hazard sticker on elevator door",
     "elevator safety notice",
 }
-CROSSWALK_LABELS = {
-    "painted zebra-striped pedestrian crossing on a road",
-    "zebra crossing painted on asphalt",
-    "pedestrian crosswalk with white stripes on a road",
-    "zebra crossing on a street",
-    "white zebra stripes at a pedestrian crossing",
-    "zebra crossing with broad white stripes across a road",
-    "marked pedestrian crossing with repeated zebra stripes",
-}
+CROSSWALK_LABELS = set(CROSSWALK_PROMPTS)
+for prompt in CROSSWALK_PROMPTS:
+    CLASS_MIN_CONF[prompt] = CROSSWALK_MIN_CONF
 
 VEHICLE_LABELS = {
     CAR_PROMPT, CAR_DISTANT_PROMPT, CAR_FAR_PROMPT,
@@ -794,33 +788,34 @@ class Speech:
                 self.current_text = None
 
     def _queue_audio(self, text, urgent=False):
-        if not isinstance(text, str) or not text.strip():
-            return
-        if self.stopping.is_set():
+        if not isinstance(text, str) or not text.strip() or self.stopping.is_set():
             return
 
-        # [수정] 긴급 알림(위험/멈추세요)인 경우에만 기존 음성을 끊고 즉시 재생
         if urgent:
+            # [수정] 동일한 긴급 음성("멈추세요")이 이미 재생 중이라면 끊지 않고 끝까지 나오게 둡니다.
             if self.current_text == text:
                 return
-            if self.current_text is not None:
-                self.interrupted_texts.add(self.current_text)
+
+            # 다른 종류의 일반 안내 음성이 나오고 있을 때만 즉시 멈추고 긴급 음성으로 교체합니다.
             with self.process_lock:
                 for proc in tuple(self.active_processes):
                     if proc.poll() is None:
                         proc.terminate()
-            while True:
+
+            # 대기 중인 일반 안내 큐 비우기
+            while not self.jobs.empty():
                 try:
                     self.jobs.get_nowait()
                 except queue.Empty:
                     break
+
             try:
                 self.jobs.put_nowait(text)
             except queue.Full:
                 pass
             return
 
-        # [수정] 일반 안내인 경우: 이미 다른 음성이 재생 중이거나 큐에 대기 중이면 끊지 않고 무시 (우르르 쏟아짐 방지)
+        # 일반 안내: 이미 재생 중이거나 대기 큐가 차있으면 무시
         if self.current_text is not None or not self.jobs.empty():
             return
 
@@ -861,7 +856,7 @@ class Speech:
         if not isinstance(text, str) or not text.strip():
             return
         now = time.monotonic()
-        repeat_window = 0.8 if key == "traffic_stop" else 1.2
+        repeat_window = 1.5 if key == "traffic_stop" else 1.2
         if key == self.last_urgent_key and now - self.last_urgent_submit < repeat_window:
             return
         self.last_urgent_key = key
@@ -1032,6 +1027,7 @@ def valid_geometry(det, width, height):
     bh = max(1, y2 - y1)
     area_ratio = (bw * bh) / max(1, width * height)
     aspect = bw / bh
+    y2_ratio = y2 / max(1, height)
 
     if label in VEHICLE_LABELS:
         return (bw >= 5 and bh >= 5 and area_ratio >= 0.00005
@@ -1053,8 +1049,13 @@ def valid_geometry(det, width, height):
                 and 0.95 <= aspect <= 3.4)
     # asdf.py 횡단보도 기하학적 조건으로 완전 복원
     if label in CROSSWALK_LABELS:
-        return (area_ratio >= 0.005 and bw >= width * 0.13
-                and bh >= height * 0.023 and aspect >= 1.1)
+        return (
+            area_ratio >= 0.010
+            and bw >= width * 0.30
+            and bh >= height * 0.05
+            and aspect >= 2.0
+            and y2_ratio >= 0.45
+        )
     if label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
         return area_ratio >= 0.04 and bh >= height * 0.22 and 0.20 <= aspect <= 3.5
     if label in DOOR_LABELS:
@@ -1066,9 +1067,9 @@ def valid_geometry(det, width, height):
     if label in DOOR_COMPONENT_LABELS:
         return bw >= 4 and bh >= 4 and area_ratio <= 0.08
     if label in STAIR_LABELS:
-        return (area_ratio >= 0.008 or bw >= width * 0.075
-                or (bh >= height * 0.12 and bw >= width * 0.16))
-    return area_ratio >= 0.0002
+        return (area_ratio >= 0.003 or bw >= width * 0.05
+                or bh >= height * 0.04)
+    return area_ratio >= 0.002
 
 
 def prepare_inference_frame(frame):
@@ -1088,45 +1089,35 @@ def guidance_for_detection(det, width):
     label, _, x1, _, x2, _ = det
     pos = zone(x1, x2, width)
 
+    # 1. 자동문계열
     if label in {"automatic door", "automatic glass door", "automatic glass sliding door"}:
-        return f"{pos} 자동 유리문"
-    if label in {"glass sliding door", "sliding glass door", "manual sliding glass door", "transparent sliding glass door"}:
-        return f"{pos} 유리 미닫이문"
-    if label in {"hinged glass door with a frame", "glass hinged entrance door"}:
-        return f"{pos} 여닫이 유리문"
-    if label == "glass door with a vertical pull handle":
-        return f"{pos} 손잡이형 유리문"
-    if label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
-        return f"{pos} 유리문"
+        return f"{pos} 자동문, 버튼이나 센서를 확인하세요"
+    if label == "automatic door push button":
+        return f"{pos} 문 버튼, 누르면 문이 열립니다"
 
+    # 2. 미닫이문 (Sliding)
+    if label in {"glass sliding door", "sliding glass door", "manual sliding glass door", "transparent sliding glass door", "sliding door"}:
+        return f"{pos} 미닫이문, 옆으로 미세요"
+
+    # 3. 여닫이문 (Hinged / General)
+    if label in {"hinged glass door with a frame", "glass hinged entrance door", "hinged door"}:
+        return f"{pos} 여닫이문, 밀거나 당기세요"
+    if label in {"glass door", "wooden door", "steel door", "door"}:
+        return f"{pos} 문, 손잡이를 잡고 밀거나 당기세요"
+
+    # 4. 문손잡이 & 부속품별 열기 방식 Direct 안내
     if label in {"doorknob", "door knob", "door knob mounted on a door", "round doorknob on a door"}:
-        return f"{pos} 원형 문고리"
-    if label in {"push bar", "push bar on a commercial door"}:
-        return f"{pos} 푸시바"
+        return f"{pos} 원형 문고리, 돌려서 당기세요"
+    if label in {"push bar", "push bar on a door", "push bar on a commercial door"}:
+        return f"{pos} 푸시바, 앞으로 밀어서 여세요"
     if label in {"lever handle", "lever door handle", "lever door handle attached to a door", "door lever handle on a door"}:
-        return f"{pos} 레버 손잡이"
+        return f"{pos} 레버 손잡이, 아래로 누르고 밀거나 당기세요"
     if label in {"door handle", "door handle mounted on a door", "metal handle attached to a door"}:
-        return f"{pos} 문손잡이"
-    if label == "door push button":
-        return f"{pos} 문 버튼"
-    if label in DOOR_LOCK_LABELS or label in LOCK_TYPE_LABELS:
+        return f"{pos} 문손잡이, 잡고 밀거나 당기세요"
+    if label in DOOR_LOCK_LABELS or label in LOCK_TYPE_LABELS or label == "electronic keypad door lock":
         return f"{pos} 도어락"
 
-    if label in STEEL_DOOR_LABELS:
-        return f"{pos} 철문"
-    if label in {"wooden door"}:
-        return f"{pos} 나무문"
-    if label in {"sliding door"}:
-        return f"{pos} 미닫이문"
-    if label in {"hinged door"}:
-        return f"{pos} 여닫이문"
-    if label == "open door":
-        return f"{pos} 열린 문"
-    if label == "closed door":
-        return f"{pos} 닫힌 문"
-    if label in DOOR_LABELS:
-        return f"{pos} 문"
-
+    # 기타 위험/장애물 요소
     if label in STAIR_LABELS:
         return f"{pos} 계단"
     if label == "elevator":
@@ -1168,72 +1159,36 @@ class SituationMachine:
     def __init__(self):
         self.state = "WALK"
         self.forced = False
-        self.candidate = None
-        self.count = 0
         self.last_crosswalk_time = None
-        self.crosswalk_candidate_since = None
 
-    def set_forced(self, state):
-        self.state = state
-        self.forced = True
-        if state == "CROSSWALK":
-            self.last_crosswalk_time = time.monotonic()
-
-    def auto(self):
-        self.forced = False
-        self.last_crosswalk_time = None
-        self.crosswalk_candidate_since = None
-
-    def update(self, detections, width=None):
+    def update(self, detections, crosswalk_held_dets):
         now = time.monotonic()
-        crosswalk_candidates = [
-            d for d in detections
-            if d[0] in CROSSWALK_LABELS
-        ]
-        stair_candidates = [d for d in detections if d[0] in STAIR_LABELS]
-        crosswalk_detected = any(
-            not any(box_iou(crosswalk, stair) >= 0.12 for stair in stair_candidates)
-            for crosswalk in crosswalk_candidates
-        )
+        
+        # 신규 감지 또는 3초 홀드로 유지 중인 횡단보도가 있는지 확인
+        has_crosswalk = (len(crosswalk_held_dets) > 0) or any(d[0] in CROSSWALK_LABELS for d in detections)
 
-        if crosswalk_detected:
+        if has_crosswalk:
             self.last_crosswalk_time = now
-            self.crosswalk_candidate_since = (
-                self.crosswalk_candidate_since
-                if self.crosswalk_candidate_since is not None else now
-            )
             self.state = "CROSSWALK"
-            self.candidate = "CROSSWALK"
-            self.count = 1
-            self.forced = False
             return self.state
 
+        # 감지가 끊겼지만 3초 유지 시간이 남아있는 경우
         if self.state == "CROSSWALK":
-            if (self.last_crosswalk_time is not None
+            if (self.last_crosswalk_time is not None 
                     and now - self.last_crosswalk_time < CROSSWALK_EXIT_HOLD_SECONDS):
-                return self.state
+                return "CROSSWALK"
+            
+            # 3초 경과 후 WALK 모드로 복귀
             self.state = "WALK"
-            self.forced = False
-            self.candidate = "WALK"
-            self.count = 1
             self.last_crosswalk_time = None
-            self.crosswalk_candidate_since = None
 
-        if self.forced:
-            return self.state
-
-        self.crosswalk_candidate_since = None
-        self.last_crosswalk_time = None
-        self.state = "WALK"
-        self.candidate = "WALK"
-        self.count = 1
         return self.state
 
 
 class CrosswalkSafety:
     def __init__(self):
         self.status = None
-        self.tracks = []
+        self.tracks = {}  # {track_id: info}
         self.next_track_id = 1
         self.last_stop_reason = None
 
@@ -1246,86 +1201,81 @@ class CrosswalkSafety:
     def _center(det):
         return ((det[2] + det[4]) / 2.0, (det[3] + det[5]) / 2.0)
 
-    @staticmethod
-    def _distance(a, b, width, height):
-        dx = (a[0] - b[0]) / max(1, width)
-        dy = (a[1] - b[1]) / max(1, height)
-        return (dx * dx + dy * dy) ** 0.5
-
     def update(self, vehicles, width, height, now=None):
         now = time.monotonic() if now is None else now
-        self.tracks = [
-            track for track in self.tracks
-            if now - track["last_seen"] <= VEHICLE_FRAME_HOLD_SECONDS
+        
+        # 1. 일정 시간 동안 안 보인 오래된 트랙 삭제 (0.5초 유예)
+        expired_ids = [
+            t_id for t_id, tr in self.tracks.items()
+            if now - tr["last_seen"] > VEHICLE_FRAME_HOLD_SECONDS
         ]
-        unused = set(range(len(self.tracks)))
-        urgent = False
+        for t_id in expired_ids:
+            del self.tracks[t_id]
 
+        moving_vehicle_detected = False
+
+        # 2. 감지된 차량들에 대한 매칭 및 움직임 판단
         for det in vehicles:
-            center = self._center(det)
-            candidates = [
-                (self._distance(center, self.tracks[i]["center"], width, height), i)
-                for i in unused
-                if self._distance(center, self.tracks[i]["center"], width, height)
-                    <= VEHICLE_ASSOCIATION_GAP
-            ]
-            match = min(candidates, default=None)
-            zone_idx = min(CROSSWALK_ZONE_COUNT - 1, max(0, int((center[0] / max(1, width)) * CROSSWALK_ZONE_COUNT)))
+            cx, cy = self._center(det)
+            matched_id = None
+            
+            # 기존 트랙 중 가장 가까운 트랙 찾기
+            min_dist = 999.0
+            for t_id, tr in self.tracks.items():
+                # 이전 위치와의 상대적 거리 계산 (화면 크기 비율)
+                dx = (cx - tr["center"][0]) / max(1, width)
+                dy = (cy - tr["center"][1]) / max(1, height)
+                dist = (dx*dx + dy*dy) ** 0.5
+                
+                if dist < VEHICLE_ASSOCIATION_GAP and dist < min_dist:
+                    min_dist = dist
+                    matched_id = t_id
 
-            if match is None:
-                self.tracks.append({
-                    "id": self.next_track_id,
-                    "label": det[0],
-                    "center": center,
-                    "anchor": center,
-                    "zone": zone_idx,
+            if matched_id is None:
+                # [신규 차량 등록] 새로 나타난 차는 일단 "이동 중"으로 간주
+                self.tracks[self.next_track_id] = {
+                    "center": (cx, cy),
+                    "anchor": (cx, cy),
                     "stable_since": now,
                     "last_seen": now,
-                    "det": det,
-                    "moving": True,
-                })
+                    "moving": True
+                }
                 self.next_track_id += 1
-                urgent = True
-                continue
-
-            _, index = match
-            unused.discard(index)
-            track = self.tracks[index]
-            drift = self._distance(center, track["anchor"], width, height)
-            changed_zone = zone_idx != track["zone"]
-
-            if drift <= VEHICLE_CENTER_TOLERANCE and not changed_zone:
-                if now - track["stable_since"] >= VEHICLE_STATIONARY_SECONDS:
-                    track["moving"] = False
+                moving_vehicle_detected = True
             else:
-                track["anchor"] = center
-                track["zone"] = zone_idx
-                track["stable_since"] = now
-                track["moving"] = True
-                if changed_zone:
-                    urgent = True
+                # [기존 차량 갱신] 위치 변화량 측정
+                tr = self.tracks[matched_id]
+                anchor_x, anchor_y = tr["anchor"]
+                
+                # 기준점(Anchor)으로부터의 실제 이동 거리 계산
+                shift_x = abs(cx - anchor_x) / max(1, width)
+                shift_y = abs(cy - anchor_y) / max(1, height)
+                total_shift = (shift_x**2 + shift_y**2) ** 0.5
 
-            track["center"] = center
-            track["last_seen"] = now
-            track["label"] = det[0]
-            track["det"] = det
+                # 찌그러짐(Jittering)을 감안하여 기준 허용오차를 0.05(약 5%)로 상향
+                if total_shift <= 0.05:
+                    # 0.5초 동안 제자리에 있으면 "정지 차량"으로 판정
+                    if now - tr["stable_since"] >= 0.5:
+                        tr["moving"] = False
+                else:
+                    # 허용 오차를 넘어서 진짜로 이동했으면 "이동 차량"으로 판정
+                    tr["anchor"] = (cx, cy)
+                    tr["stable_since"] = now
+                    tr["moving"] = True
 
-        visible_tracks = [
-            track for track in self.tracks
-            if now - track["last_seen"] <= VEHICLE_FRAME_HOLD_SECONDS
-        ]
-        
-        moving_vehicles = [t for t in visible_tracks if t.get("moving", True)]
+                tr["center"] = (cx, cy)
+                tr["last_seen"] = now
 
-        if not vehicles and not visible_tracks:
-            self.status = "CLEAR"
-        elif not moving_vehicles:
-            self.status = "CLEAR"
-        else:
+                if tr["moving"]:
+                    moving_vehicle_detected = True
+
+        # 3. 움직이는 차가 1대라도 있으면 "대기(WAIT)", 모두 멈춰있거나 차가 없으면 "통행(CLEAR)"
+        if moving_vehicle_detected:
             self.status = "WAIT"
-
-        self.last_stop_reason = "new_or_moved_vehicle" if urgent else None
-        return self.status, urgent
+            return "WAIT", True
+        else:
+            self.status = "CLEAR"
+            return "CLEAR", False
 
 
 class StairConfirm:
@@ -1344,16 +1294,19 @@ class StairConfirm:
         width_ratio = (x2 - x1) / max(1, width)
         height_ratio = (y2 - y1) / max(1, height)
         aspect = (x2 - x1) / max(1, y2 - y1)
+        
+        # y2 (하단 위치) 제약을 0.35 이상으로 완화하여 하단/중단 내려가는 계단 허용
         overlaps_walk = (
-            x2 >= width * 0.04
-            and x1 <= width * 0.96
-            and y2 >= height * 0.48
+            x2 >= width * 0.02
+            and x1 <= width * 0.98
+            and y2 >= height * 0.35
         )
+        # 최소 면적 비율 조건 낮춤 (0.004 -> 0.0025)
         large_enough = (
-            box_area / frame_area >= STAIR_MIN_AREA_RATIO
-            or width_ratio >= STAIR_MIN_WIDTH_RATIO
+            box_area / frame_area >= 0.0025
+            or width_ratio >= 0.035
         )
-        plausible_shape = 0.25 <= aspect <= 7.0 and height_ratio >= 0.04
+        plausible_shape = 0.20 <= aspect <= 9.0 and height_ratio >= 0.025
         return overlaps_walk and large_enough and plausible_shape
 
     def update(self, detections, width, height):
@@ -1770,8 +1723,11 @@ def main():
 
             active = [d for d in filtered_for_guidance if walking_candidate(d, w, h) and valid_geometry(d, w, h)]
 
-            state = machine.update(active + crosswalk_dets + confirmed_stairs + confirmed_elevators, w)
+            # 1. crosswalk_frame_hold를 먼저 업데이트하여 유지 중인 횡단보도 리스트 획득
             crosswalk_dets = crosswalk_frame_hold.update(crosswalk_dets)
+
+            # 2. machine.update에 감지 리스트(all_dets 또는 active)와 3초 유지 리스트(crosswalk_dets)를 전달
+            state = machine.update(all_dets, crosswalk_dets)
 
             general_mode = state != "CROSSWALK"
             ultrasonic_distance_cm = ultrasonic.measure_cm() if general_mode else None
