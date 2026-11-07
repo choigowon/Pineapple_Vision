@@ -47,7 +47,7 @@ URGENT_SPEECH_COOLDOWN = 0.12
 
 CROSSWALK_VEHICLE_MIN_CONF = 0.10
 CROSSWALK_CLEAR_SECONDS = 2.0
-CROSSWALK_MIN_CONF = 0.24
+CROSSWALK_MIN_CONF = 0.28
 CROSSWALK_ENTER_CONFIRM_SECONDS = 0.4
 CROSSWALK_EXIT_HOLD_SECONDS = 3.0
 CROSSWALK_DETECTION_GAP_SECONDS = 2.0
@@ -80,8 +80,6 @@ CROSSWALK_PROMPTS = [
     "pedestrian zebra crossing on asphalt road at an intersection",
     "white parallel stripes of crosswalk on black background",
     "toy model or miniature pedestrian zebra crosswalk",
-    "white striped lines pattern on floor",
-    "zebra crossing pattern printed on board or paper",
 ]
 CROSSWALK_LABELS = set(CROSSWALK_PROMPTS)
 
@@ -98,6 +96,8 @@ MOTORCYCLE_PROMPT = "motorcycle on a road"
 PLAIN_SCOOTER_PROMPT = "scooter on a road"
 CAR_DISTANT_PROMPT = "small distant car driving on a road"
 CAR_FAR_PROMPT = "far away passenger vehicle on a road"
+TOY_CAR_PROMPT = "toy car or miniature model vehicle"
+TOY_VEHICLE_PROMPT = "toy vehicle or mini car"
 MOTORCYCLE_RIDER_PROMPT = "motorcycle with a rider on a road"
 MOTORCYCLE_DISTANT_PROMPT = "small distant motorcycle with rider"
 MOTORCYCLIST_PROMPT = "motorcyclist riding a motorcycle on a road"
@@ -322,6 +322,7 @@ VEHICLE_LABELS = {
     SCOOTER_PROMPT, SCOOTER_RIDER_PROMPT,
     MOTORCYCLE_PROMPT, MOTORCYCLE_RIDER_PROMPT,
     MOTORCYCLE_DISTANT_PROMPT, MOTORCYCLIST_PROMPT, PLAIN_SCOOTER_PROMPT,
+    TOY_CAR_PROMPT, TOY_VEHICLE_PROMPT,
     "car", "motorcycle", "motorbike", "scooter", "kick scooter",
     "electric scooter", "electric kick scooter", "bicycle",
 }
@@ -362,6 +363,8 @@ KOREAN_LABELS = {
     MOTORCYCLE_DISTANT_PROMPT: "오토바이",
     MOTORCYCLIST_PROMPT: "오토바이",
     PLAIN_SCOOTER_PROMPT: "스쿠터",
+    TOY_CAR_PROMPT: "차량",
+    TOY_VEHICLE_PROMPT: "차량",
     "motorcycle": "오토바이",
     "motorbike": "오토바이",
     "curb": "연석",
@@ -1024,8 +1027,8 @@ def valid_geometry(det, width, height):
     y2_ratio = y2 / max(1, height)
 
     if label in VEHICLE_LABELS:
-        return (bw >= 5 and bh >= 5 and area_ratio >= 0.00005
-                and area_ratio <= 0.45 and 0.18 <= aspect <= 8.0)
+        return (bw >= 3 and bh >= 3 and area_ratio >= 0.00003
+                and area_ratio <= 0.7 and 0.15 <= aspect <= 9.0)
     if label in {"shelf", "bookshelf", "storage shelf", "freestanding storage shelf"}:
         return (area_ratio >= 0.012 and bw >= width * 0.12
                 and bh >= height * 0.10 and 0.20 <= aspect <= 4.0)
@@ -1043,11 +1046,11 @@ def valid_geometry(det, width, height):
                 and 0.95 <= aspect <= 3.4)
     if label in CROSSWALK_LABELS:
         return (
-            area_ratio >= 0.001
-            and bw >= width * 0.10
-            and bh >= height * 0.02
-            and aspect >= 0.5
-            and y2_ratio >= 0.10
+            area_ratio >= 0.015
+            and bw >= width * 0.25
+            and bh >= height * 0.05
+            and aspect >= 1.0
+            and y2_ratio >= 0.50
         )
     if label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
         return area_ratio >= 0.04 and bh >= height * 0.22 and 0.20 <= aspect <= 3.5
