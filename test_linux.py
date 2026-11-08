@@ -47,7 +47,7 @@ URGENT_SPEECH_COOLDOWN = 0.12
 
 CROSSWALK_VEHICLE_MIN_CONF = 0.10
 CROSSWALK_CLEAR_SECONDS = 2.0
-CROSSWALK_MIN_CONF = 0.28
+CROSSWALK_MIN_CONF = 0.22
 CROSSWALK_ENTER_CONFIRM_SECONDS = 0.4
 CROSSWALK_EXIT_HOLD_SECONDS = 3.0
 CROSSWALK_DETECTION_GAP_SECONDS = 2.0
@@ -75,13 +75,19 @@ ELEVATOR_STICKER_MIN_CONF = 0.72
 ELEVATOR_STICKER_CONFIRM_FRAMES = 3
 
 CROSSWALK_PROMPTS = [
-    "zebra pedestrian crossing stripes spanning across a multi-lane road",
-    "white striped pedestrian crosswalk painted on street pavement, not parking lines",
-    "pedestrian zebra crossing on asphalt road at an intersection",
-    "white parallel stripes of crosswalk on black background",
-    "toy model or miniature pedestrian zebra crosswalk",
+    "white striped pedestrian crosswalk painted flat on asphalt road pavement",
+    "zebra pedestrian crossing stripes on flat street surface",
+    "white parallel lines of pedestrian crosswalk on black road ground",
+    "pedestrian zebra crossing stripes at a road intersection",
 ]
 CROSSWALK_LABELS = set(CROSSWALK_PROMPTS)
+
+STAIR_PROMPTS = [
+    "indoor architectural staircase with steps leading up or down",
+    "outdoor concrete flight of stairs with handrail",
+    "building entrance staircase with vertical risers",
+    "descending or ascending staircase structure",
+]
 
 # 문 스티커 / 표지판 프롬프트 (미세요, 당기세요, 숫자 타겟)
 TEXT_SIGN_PROMPTS = [
@@ -90,14 +96,14 @@ TEXT_SIGN_PROMPTS = [
     "door sign sticker with text",
 ]
 
-CAR_PROMPT = "passenger car driving on a road, viewed from a distance"
+CAR_PROMPT = "real passenger car or automobile"
 SCOOTER_PROMPT = "electric kick scooter on a road"
 MOTORCYCLE_PROMPT = "motorcycle on a road"
 PLAIN_SCOOTER_PROMPT = "scooter on a road"
-CAR_DISTANT_PROMPT = "small distant car driving on a road"
-CAR_FAR_PROMPT = "far away passenger vehicle on a road"
-TOY_CAR_PROMPT = "toy car or miniature model vehicle"
-TOY_VEHICLE_PROMPT = "toy vehicle or mini car"
+CAR_DISTANT_PROMPT = "distant passenger car"
+CAR_FAR_PROMPT = "far away vehicle"
+TOY_CAR_PROMPT = "toy car, miniature vehicle model, or diecast car"
+TOY_VEHICLE_PROMPT = "small toy car on a floor or table"
 MOTORCYCLE_RIDER_PROMPT = "motorcycle with a rider on a road"
 MOTORCYCLE_DISTANT_PROMPT = "small distant motorcycle with rider"
 MOTORCYCLIST_PROMPT = "motorcyclist riding a motorcycle on a road"
@@ -163,8 +169,8 @@ HANDLE_TYPE_LABELS = {
 LOCK_TYPE_LABELS = {"fingerprint door lock", "smart door lock with keypad"}
 
 CLASS_MIN_CONF = {
-    "bed with mattress and pillow": 0.50,
-    "bed with visible mattress, pillow and blanket in a bedroom": 0.48,
+    "bed with mattress and pillow": 0.40,
+    "bed with visible mattress, pillow and blanket in a bedroom": 0.40,
     "tiled wall": 0.42,
     "ceramic wall tiles": 0.42,
     "wall covered with square ceramic tiles": 0.44,
@@ -184,24 +190,24 @@ CLASS_MIN_CONF = {
     # "glass window": 0.40,
     # "building window": 0.40,
     # "exterior window": 0.42,
-    "box": 0.65,
+    "box": 0.55,
     "desk": 0.40,
     "chair": 0.48,
     "door": 0.22,
     "wooden door": 0.30,
     "steel door": 0.40,
     "glass entrance door": 0.30,
-    "sliding glass door": 0.22,
-    "automatic glass door": 0.25,
-    "door handle": 0.35,
-    "doorknob": 0.35,
-    "lever door handle": 0.35,
-    "door knob": 0.35,
-    "push bar": 0.48,
-    "door push button": 0.42,
-    "electronic keypad door lock": 0.33,
-    "door lock": 0.35,
-    CAR_PROMPT: 0.17,
+    "sliding glass door": 0.20,
+    "automatic glass door": 0.30,
+    "door handle": 0.40,
+    "doorknob": 0.40,
+    "lever door handle": 0.40,
+    "door knob": 0.40,
+    "push bar": 0.50,
+    "door push button": 0.50,
+    "electronic keypad door lock": 0.35,
+    "door lock": 0.40,
+    CAR_PROMPT: 0.30,
     CAR_DISTANT_PROMPT: 0.15,
     CAR_FAR_PROMPT: 0.15,
     SCOOTER_PROMPT: 0.17,
@@ -211,9 +217,11 @@ CLASS_MIN_CONF = {
     MOTORCYCLIST_PROMPT: 0.15,
     PLAIN_SCOOTER_PROMPT: 0.17,
     SCOOTER_RIDER_PROMPT: 0.15,
+    TOY_CAR_PROMPT: 0.22,
+    TOY_VEHICLE_PROMPT: 0.22,
     "motorcycle": 0.17,
     "motorbike": 0.17,
-    "car": 0.17,
+    "car": 0.30,
     "scooter": 0.17,
     "kick scooter": 0.17,
     "electric scooter": 0.17,
@@ -259,6 +267,7 @@ PROMPTS = [
     *sorted(HANGER_PROMPTS),
     *sorted(WALL_SURFACE_LABELS),
     "tree", CAR_PROMPT, "car", CAR_DISTANT_PROMPT, CAR_FAR_PROMPT,
+    TOY_CAR_PROMPT, TOY_VEHICLE_PROMPT,
     SCOOTER_PROMPT, PLAIN_SCOOTER_PROMPT, SCOOTER_RIDER_PROMPT, "scooter",
     MOTORCYCLE_PROMPT, MOTORCYCLE_RIDER_PROMPT, MOTORCYCLE_DISTANT_PROMPT,
     MOTORCYCLIST_PROMPT, "motorcycle", "bollard",
@@ -267,17 +276,16 @@ PROMPTS = [
     "door", "wooden door", "steel door", "glass entrance door", "sliding glass door", "automatic glass door",
     "door handle", "doorknob", "lever door handle", "door knob",
     "push bar on a door", "automatic door push button", "electronic keypad door lock", "door lock",
-    "stairs", "staircase", "stairway steps", "stair steps on a staircase",
-    "indoor staircase with visible steps", "staircase with visible steps",
-    "stairs with visible steps", "flight of stairs", "stair steps viewed from the front",
-    "staircase with several visible steps", "real staircase with clearly visible treads and risers",
-    "staircase viewed from the bottom with several visible steps",
-    "indoor staircase with multiple horizontal treads", "downward stairs", "down staircase",
-    "descending staircase", "stairs going down", "staircase descending from above",
+    *STAIR_PROMPTS,
     "elevator", "elevator safety warning sticker", "elevator safety notice",
     *CROSSWALK_PROMPTS,
     *TEXT_SIGN_PROMPTS,
 ]
+
+STAIR_LABELS = set(STAIR_PROMPTS) | {"stairs", "staircase"}
+
+for prompt in STAIR_PROMPTS:
+    CLASS_MIN_CONF[prompt] = 0.42
 
 DOOR_LABELS = {
     "door", "entrance door", "interior door", "wooden door", "closed door", "open door",
@@ -1027,30 +1035,29 @@ def valid_geometry(det, width, height):
     y2_ratio = y2 / max(1, height)
 
     if label in VEHICLE_LABELS:
-        return (bw >= 3 and bh >= 3 and area_ratio >= 0.00003
-                and area_ratio <= 0.7 and 0.15 <= aspect <= 9.0)
+        return (bw >= 20 and bh >= 15 and area_ratio >= 0.0008
+                and area_ratio <= 0.8 and 0.45 <= aspect <= 5.0)
     if label in {"shelf", "bookshelf", "storage shelf", "freestanding storage shelf"}:
         return (area_ratio >= 0.012 and bw >= width * 0.12
                 and bh >= height * 0.10 and 0.20 <= aspect <= 4.0)
     if label in {"wardrobe", "closet"}:
-        return (area_ratio >= 0.012 and bw >= width * 0.08
+        return (area_ratio >= 0.01 and bw >= width * 0.08
                 and bh >= height * 0.15 and 0.25 <= aspect <= 3.5)
     if label == "person":
         return (area_ratio >= 0.0008 and bh >= height * 0.035
                 and 0.12 <= aspect <= 2.2)
     if label in BED_LABELS:
-        return (area_ratio >= 0.045 and area_ratio <= 0.58
-                and bw >= width * 0.28 and bh >= height * 0.15
-                and y2 >= height * 0.82 and y1 >= height * 0.08
-                and (y1 + y2) / 2 >= height * 0.52
-                and 0.95 <= aspect <= 3.4)
+        return (area_ratio >= 0.035 and area_ratio <= 0.65
+                and bw >= width * 0.25 and bh >= height * 0.15
+                and y2 >= height * 0.75 and y1 >= height * 0.08
+                and 0.75 <= aspect <= 4.0)
     if label in CROSSWALK_LABELS:
         return (
-            area_ratio >= 0.015
-            and bw >= width * 0.25
+            area_ratio >= 0.01
+            and bw >= width * 0.20
             and bh >= height * 0.05
-            and aspect >= 1.0
-            and y2_ratio >= 0.50
+            and aspect >= 0.8
+            and y2_ratio >= 0.45
         )
     if label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
         return area_ratio >= 0.04 and bh >= height * 0.22 and 0.20 <= aspect <= 3.5
@@ -1233,6 +1240,7 @@ class CrosswalkSafety:
                 self.tracks[self.next_track_id] = {
                     "center": (cx, cy),
                     "anchor": (cx, cy),
+                    "first_seen": now,
                     "stable_since": now,
                     "last_seen": now,
                     "moving": True
@@ -1247,8 +1255,8 @@ class CrosswalkSafety:
                 shift_y = abs(cy - anchor_y) / max(1, height)
                 total_shift = (shift_x**2 + shift_y**2) ** 0.5
 
-                if total_shift <= 0.05:
-                    if now - tr["stable_since"] >= 0.5:
+                if total_shift <= 0.08:
+                    if now - tr["stable_since"] >= 0.4:
                         tr["moving"] = False
                 else:
                     tr["anchor"] = (cx, cy)
@@ -1278,8 +1286,12 @@ class StairConfirm:
         self.last = None
         self.count = 0
 
-    def is_complete(self, det, width, height):
+    def is_complete(self, det, width, height, crosswalk_dets=None):
         _, _, x1, y1, x2, y2 = det
+        if crosswalk_dets:
+            for cw in crosswalk_dets:
+                if box_iou(det, cw) > 0.15:
+                    return False
         box_area = max(1, (x2 - x1) * (y2 - y1))
         frame_area = max(1, width * height)
         width_ratio = (x2 - x1) / max(1, width)
@@ -1295,13 +1307,13 @@ class StairConfirm:
             box_area / frame_area >= 0.0025
             or width_ratio >= 0.035
         )
-        plausible_shape = 0.20 <= aspect <= 9.0 and height_ratio >= 0.025
+        plausible_shape = 0.20 <= aspect <= 9.0 and height_ratio >= 0.25
         return overlaps_walk and large_enough and plausible_shape
 
-    def update(self, detections, width, height):
+    def update(self, detections, width, height, crosswalk_dets=None):
         candidates = [
             d for d in detections
-            if d[0] in STAIR_LABELS and self.is_complete(d, width, height)
+            if d[0] in STAIR_LABELS and self.is_complete(d, width, height, crosswalk_dets=crosswalk_dets)
         ]
         if not candidates:
             self.reset()
@@ -1685,6 +1697,16 @@ def main():
                 conf = float(box.conf[0])
                 label = label_of(result, cls_id)
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
+                
+                bw = max(1, x2 - x1)
+                bh = max(1, y2 - y1)
+                aspect = bw / bh
+                y2_ratio = y2 / max(1, h)
+
+                if label in STAIR_LABELS and y2_ratio >= 0.50 and aspect >= 1.2 and bw >= w * 0.25:
+                    label = "white striped pedestrian crosswalk painted flat on asphalt road pavement"
+                    conf = max(conf, CROSSWALK_MIN_CONF)
+
                 det = (label, conf, x1, y1, x2, y2)
 
                 # 문 스티커/숫자 표지판 영역이 감지되었을 때 백그라운드 OCR 요청 (지연 0초)
@@ -1712,7 +1734,7 @@ def main():
             confirmed_doors = door_confirm.update(raw_doors)
             valid_components = door_component_confirm.update(all_dets, confirmed_doors)
 
-            confirmed_stairs = stair_confirm.update(all_dets, w, h)
+            confirmed_stairs = stair_confirm.update(all_dets, w, h, crosswalk_dets=crosswalk_dets)
 
             filtered_for_guidance = [
                 d for d in all_dets
