@@ -47,7 +47,7 @@ URGENT_SPEECH_COOLDOWN = 0.12
 
 CROSSWALK_VEHICLE_MIN_CONF = 0.10
 CROSSWALK_CLEAR_SECONDS = 2.0
-CROSSWALK_MIN_CONF = 0.22
+CROSSWALK_MIN_CONF = 0.20
 CROSSWALK_ENTER_CONFIRM_SECONDS = 0.4
 CROSSWALK_EXIT_HOLD_SECONDS = 3.0
 CROSSWALK_DETECTION_GAP_SECONDS = 2.0
@@ -59,7 +59,7 @@ VEHICLE_CENTER_TOLERANCE = 0.035
 VEHICLE_ASSOCIATION_GAP = 0.22
 CROSSWALK_ZONE_COUNT = 4
 CROSSWALK_REPEAT_SECONDS = 3.0
-CROSSWALK_STOP_TO_CROSS_DELAY_SECONDS = 1.0
+CROSSWALK_STOP_TO_CROSS_DELAY_SECONDS = 1.5
 CROSSWALK_ALIGNMENT_HOLD_SECONDS = 2.0
 PIPER_SPEED_FACTOR = float(os.getenv("WALKING_ASSISTANT_PIPER_SPEED", "1.12"))
 SHOW_CROSSWALK_DEBUG = os.getenv("WALKING_ASSISTANT_SHOW_DEBUG", "0").strip().lower() in {"1", "true", "yes"}
@@ -75,10 +75,10 @@ ELEVATOR_STICKER_MIN_CONF = 0.72
 ELEVATOR_STICKER_CONFIRM_FRAMES = 3
 
 CROSSWALK_PROMPTS = [
-    "white striped pedestrian crosswalk painted flat on asphalt road pavement",
-    "zebra pedestrian crossing stripes on flat street surface",
-    "white parallel lines of pedestrian crosswalk on black road ground",
-    "pedestrian zebra crossing stripes at a road intersection",
+    "white striped pedestrian crosswalk pattern on a floor",
+    "white parallel zebra crossing stripes on dark surface",
+    "miniature white zebra pedestrian crosswalk model",
+    "white stripe lines of crosswalk pattern",
 ]
 CROSSWALK_LABELS = set(CROSSWALK_PROMPTS)
 
@@ -102,8 +102,10 @@ MOTORCYCLE_PROMPT = "motorcycle on a road"
 PLAIN_SCOOTER_PROMPT = "scooter on a road"
 CAR_DISTANT_PROMPT = "distant passenger car"
 CAR_FAR_PROMPT = "far away vehicle"
-TOY_CAR_PROMPT = "toy car, miniature vehicle model, or diecast car"
-TOY_VEHICLE_PROMPT = "small toy car on a floor or table"
+# TOY_CAR_PROMPT = "toy car, miniature vehicle model, or diecast car"
+# TOY_VEHICLE_PROMPT = "small toy car on a floor or table"
+TOY_CAR_PROMPT = "miniature toy car or plastic model vehicle on floor"
+TOY_VEHICLE_PROMPT = "small toy vehicle model"
 MOTORCYCLE_RIDER_PROMPT = "motorcycle with a rider on a road"
 MOTORCYCLE_DISTANT_PROMPT = "small distant motorcycle with rider"
 MOTORCYCLIST_PROMPT = "motorcyclist riding a motorcycle on a road"
@@ -163,10 +165,16 @@ GLASS_DOOR_TYPE_LABELS = {
     "glass door with a vertical pull handle",
 }
 HANDLE_TYPE_LABELS = {
-    "round doorknob on a door", "lever door handle attached to a door",
-    "recessed handle on a sliding glass door", "push bar on a commercial door",
+    "round spherical metal doorknob mounted on a door",
+    "horizontal lever door handle attached to a door",
+    "recessed handle flush with a sliding door surface",
+    "long vertical pull handle bar on a commercial glass door",
+    "horizontal panic push bar across a exit door",
 }
-LOCK_TYPE_LABELS = {"fingerprint door lock", "smart door lock with keypad"}
+LOCK_TYPE_LABELS = {
+    "digital keypad smart door lock with numbers",
+    "electronic door lock mounted on a door panel",
+}
 
 CLASS_MIN_CONF = {
     "bed with mattress and pillow": 0.40,
@@ -210,20 +218,20 @@ CLASS_MIN_CONF = {
     CAR_PROMPT: 0.30,
     CAR_DISTANT_PROMPT: 0.15,
     CAR_FAR_PROMPT: 0.15,
-    SCOOTER_PROMPT: 0.17,
+    SCOOTER_PROMPT: 0.25,
     MOTORCYCLE_PROMPT: 0.17,
     MOTORCYCLE_RIDER_PROMPT: 0.15,
     MOTORCYCLE_DISTANT_PROMPT: 0.15,
     MOTORCYCLIST_PROMPT: 0.15,
-    PLAIN_SCOOTER_PROMPT: 0.17,
+    PLAIN_SCOOTER_PROMPT: 0.25,
     SCOOTER_RIDER_PROMPT: 0.15,
     TOY_CAR_PROMPT: 0.22,
     TOY_VEHICLE_PROMPT: 0.22,
     "motorcycle": 0.17,
     "motorbike": 0.17,
     "car": 0.30,
-    "scooter": 0.17,
-    "kick scooter": 0.17,
+    "scooter": 0.25,
+    "kick scooter": 0.25,
     "electric scooter": 0.17,
     "electric kick scooter": 0.17,
     "bicycle": 0.52,
@@ -296,14 +304,18 @@ DOOR_LABELS = {
 }
 
 DOOR_COMPONENT_LABELS = {
-    "doorknob", "door knob", "door handle", "lever handle",
-    "lever door handle", "door handle mounted on a door",
-    "door lever handle on a door", "metal handle attached to a door",
-    "door knob mounted on a door", "push bar",
-    "door push button", "recessed door handle",
-    *sorted(HANDLE_TYPE_LABELS), *sorted(LOCK_TYPE_LABELS),
-    *DOOR_LOCK_LABELS,
+    *sorted(HANDLE_TYPE_LABELS),
+    *sorted(LOCK_TYPE_LABELS),
+    "door push button switch",
 }
+
+for handle_prompt in HANDLE_TYPE_LABELS:
+    CLASS_MIN_CONF[handle_prompt] = 0.48
+
+for lock_prompt in LOCK_TYPE_LABELS:
+    CLASS_MIN_CONF[lock_prompt] = 0.45
+
+CLASS_MIN_CONF["door push button switch"] = 0.45
 
 STAIR_LABELS = {
     "stairs", "staircase", "stairway steps", "stair steps on a staircase",
@@ -436,6 +448,14 @@ KOREAN_LABELS = {
     "glass hinged entrance door": "여닫이 유리문",
     "glass door with a vertical pull handle": "손잡이형 유리문",
     **{label: "유리문" for label in GLASS_DOOR_LABELS},
+    "round spherical metal doorknob mounted on a door": "원형 문고리",
+    "horizontal lever door handle attached to a door": "레버 손잡이",
+    "recessed handle flush with a sliding door surface": "매립 손잡이",
+    "long vertical pull handle bar on a commercial glass door": "문손잡이",
+    "horizontal panic push bar across a exit door": "푸시바",
+    "digital keypad smart door lock with numbers": "도어락",
+    "electronic door lock mounted on a door panel": "도어락",
+    "door push button switch": "문 버튼",
 }
 
 class AsyncOCRReader:
@@ -1034,6 +1054,12 @@ def valid_geometry(det, width, height):
     aspect = bw / bh
     y2_ratio = y2 / max(1, height)
 
+    if label in {SCOOTER_PROMPT, PLAIN_SCOOTER_PROMPT, "scooter", "kick scooter", "electric scooter"}:
+        return (
+            area_ratio >= 0.002 
+            and bh >= height * 0.08
+            and 0.15 <= aspect <= 1.1
+        )
     if label in VEHICLE_LABELS:
         return (bw >= 20 and bh >= 15 and area_ratio >= 0.0008
                 and area_ratio <= 0.8 and 0.45 <= aspect <= 5.0)
@@ -1053,11 +1079,11 @@ def valid_geometry(det, width, height):
                 and 0.75 <= aspect <= 4.0)
     if label in CROSSWALK_LABELS:
         return (
-            area_ratio >= 0.01
-            and bw >= width * 0.20
+            area_ratio >= 0.005
+            and bw >= width * 0.10
             and bh >= height * 0.05
             and aspect >= 0.8
-            and y2_ratio >= 0.45
+            and y2_ratio >= 0.50
         )
     if label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
         return area_ratio >= 0.04 and bh >= height * 0.22 and 0.20 <= aspect <= 3.5
@@ -1196,85 +1222,76 @@ class SituationMachine:
 
 class CrosswalkSafety:
     def __init__(self):
-        self.status = None
-        self.tracks = {}
-        self.next_track_id = 1
-        self.last_stop_reason = None
+        self.status = "CLEAR"
+        self.stopped_vehicle_tracks = []
+        # 차량 감지 안 될 때 기존 정지 메모리 유지 시간 (1.8초)
+        self.HOLD_SECONDS = 1.8
+        # 차가 완전히 멈췄다고 확정짓기 위해 필요한 최소 체류 시간 (0.7초)
+        self.STATIONARY_CONFIRM_SECONDS = 0.8
 
     def reset(self):
-        self.status = None
-        self.tracks.clear()
-        self.last_stop_reason = None
-
-    @staticmethod
-    def _center(det):
-        return ((det[2] + det[4]) / 2.0, (det[3] + det[5]) / 2.0)
+        self.status = "CLEAR"
+        self.stopped_vehicle_tracks.clear()
 
     def update(self, vehicles, width, height, now=None):
         now = time.monotonic() if now is None else now
-        
-        expired_ids = [
-            t_id for t_id, tr in self.tracks.items()
-            if now - tr["last_seen"] > VEHICLE_FRAME_HOLD_SECONDS
+
+        # 1. 1.8초 동안 재감지되지 않은 오래된 정지 메모리 정리
+        self.stopped_vehicle_tracks = [
+            tr for tr in self.stopped_vehicle_tracks
+            if now - tr["last_seen"] <= self.HOLD_SECONDS
         ]
-        for t_id in expired_ids:
-            del self.tracks[t_id]
 
-        moving_vehicle_detected = False
-
-        for det in vehicles:
-            cx, cy = self._center(det)
-            matched_id = None
-            
-            min_dist = 999.0
-            for t_id, tr in self.tracks.items():
-                dx = (cx - tr["center"][0]) / max(1, width)
-                dy = (cy - tr["center"][1]) / max(1, height)
-                dist = (dx*dx + dy*dy) ** 0.5
-                
-                if dist < VEHICLE_ASSOCIATION_GAP and dist < min_dist:
-                    min_dist = dist
-                    matched_id = t_id
-
-            if matched_id is None:
-                self.tracks[self.next_track_id] = {
-                    "center": (cx, cy),
-                    "anchor": (cx, cy),
-                    "first_seen": now,
-                    "stable_since": now,
-                    "last_seen": now,
-                    "moving": True
-                }
-                self.next_track_id += 1
-                moving_vehicle_detected = True
-            else:
-                tr = self.tracks[matched_id]
-                anchor_x, anchor_y = tr["anchor"]
-                
-                shift_x = abs(cx - anchor_x) / max(1, width)
-                shift_y = abs(cy - anchor_y) / max(1, height)
-                total_shift = (shift_x**2 + shift_y**2) ** 0.5
-
-                if total_shift <= 0.08:
-                    if now - tr["stable_since"] >= 0.4:
-                        tr["moving"] = False
-                else:
-                    tr["anchor"] = (cx, cy)
-                    tr["stable_since"] = now
-                    tr["moving"] = True
-
-                tr["center"] = (cx, cy)
-                tr["last_seen"] = now
-
-                if tr["moving"]:
-                    moving_vehicle_detected = True
-
-        if moving_vehicle_detected:
-            self.status = "WAIT"
-            return "WAIT", True
-        else:
+        # 2. 감지된 차가 없으면 기존 메모리 기반으로 CLEAR 반환
+        if not vehicles:
             self.status = "CLEAR"
             return "CLEAR", False
+
+        moving_vehicle_count = 0
+        MAX_DIST_SQ = 0.0064  # 중심점 변동 허용 범위 제곱값
+        inv_w = 1.0 / max(1, width)
+        inv_h = 1.0 / max(1, height)
+
+        for det in vehicles:
+            x1, y1, x2, y2 = det[2:6]
+            cx, cy = (x1 + x2) * 0.5, (y1 + y2) * 0.5
+
+            matched_track = None
+            for track in self.stopped_vehicle_tracks:
+                scx, scy = track["center"]
+                dx = (cx - scx) * inv_w
+                dy = (cy - scy) * inv_h
+                dist_sq = dx * dx + dy * dy
+
+                if dist_sq <= MAX_DIST_SQ:
+                    matched_track = track
+                    break
+
+            if matched_track is not None:
+                # 기존 트랙에 매칭됨: 중심점 및 시간 갱신
+                matched_track["center"] = (cx, cy)
+                matched_track["last_seen"] = now
+                
+                # 정지 체류 시간이 0.7초 미만이면 아직 멈춘 차로 인정 안함 (움직이는 차로 간주)
+                if now - matched_track["first_seen"] < self.STATIONARY_CONFIRM_SECONDS:
+                    moving_vehicle_count += 1
+            else:
+                # 완벽히 새로 나타난 차: 새로 관찰 시작 등록만 하고 '이동 차'로 분류
+                self.stopped_vehicle_tracks.append({
+                    "center": (cx, cy),
+                    "first_seen": now,
+                    "last_seen": now
+                })
+                moving_vehicle_count += 1
+
+        # 3. 0.7초 이상 멈춰서지 않은 '이동 중인 차'가 1대라도 있으면 즉시 WAIT 유지
+        if moving_vehicle_count > 0:
+            self.status = "WAIT"
+            return "WAIT", True
+
+        # 4. 화면의 모든 차가 0.7초 이상 제자리에 멈춰있음이 확정된 경우에만 안정적으로 CLEAR 출력
+        self.status = "CLEAR"
+        return "CLEAR", False
 
 
 class StairConfirm:
@@ -1405,12 +1422,38 @@ class DoorComponentConfirm:
     def reset(self):
         self.previous = []
 
+    @staticmethod
+    def is_inside_or_near_door(component, doors, max_pixel_margin=30):
+        # 문 감지 결과가 하나도 없는 상황이면 무분별한 오탐지 방지를 위해 손잡이 거부
+        if not doors:
+            return False
+            
+        cx, cy = (component[2] + component[4]) / 2.0, (component[3] + component[5]) / 2.0
+        
+        for door in doors:
+            dx1, dy1, dx2, dy2 = door[2:6]
+            # 손잡이 중심점이 문 영역(여유 마진 포함) 내에 포함되어 있는지 확인
+            if (dx1 - max_pixel_margin) <= cx <= (dx2 + max_pixel_margin) and \
+               (dy1 - max_pixel_margin) <= cy <= (dy2 + max_pixel_margin):
+                return True
+        return False
+
     def update(self, detections, confirmed_doors):
-        candidates = [
+        candidates = []
+        raw_components = [
             d for d in detections
             if d[0] in DOOR_COMPONENT_LABELS
-            and d[1] >= CLASS_MIN_CONF.get(d[0], HANDLE_MIN_CONF)
+            and d[1] >= CLASS_MIN_CONF.get(d[0], 0.45)
         ]
+        
+        # 전체 감지된 문 후보(미확정 포함) 추출
+        all_doors = [d for d in detections if d[0] in DOOR_LABELS] + confirmed_doors
+
+        for comp in raw_components:
+            # 문 영역 내부/근처에 위치한 손잡이만 최종 승인
+            if self.is_inside_or_near_door(comp, all_doors):
+                candidates.append(comp)
+
         self.previous = candidates
         return candidates
 
@@ -1703,9 +1746,10 @@ def main():
                 aspect = bw / bh
                 y2_ratio = y2 / max(1, h)
 
-                if label in STAIR_LABELS and y2_ratio >= 0.50 and aspect >= 1.2 and bw >= w * 0.25:
-                    label = "white striped pedestrian crosswalk painted flat on asphalt road pavement"
-                    conf = max(conf, CROSSWALK_MIN_CONF)
+                if label in {"scooter", "kick scooter", SCOOTER_PROMPT, PLAIN_SCOOTER_PROMPT}:
+                    if aspect >= 1.0 or bh < h * 0.08:
+                        label = TOY_CAR_PROMPT
+                        conf = max(conf, 0.20)
 
                 det = (label, conf, x1, y1, x2, y2)
 
@@ -1754,6 +1798,11 @@ def main():
             ultrasonic.update_warning(ultrasonic_distance_cm, active=general_mode)
 
             if state == "CROSSWALK":
+                # 횡단보도 상태로 처음 변경되었거나 재탐지될 때 기존 정지 차 메모리 리셋
+                if last_reported_state != "CROSSWALK":
+                    crosswalk_safety.reset()
+                    speech.say("crosswalk_front", "정면 횡단보도", force=True)
+
                 traffic_status, urgent_stop = crosswalk_safety.update(crosswalk_vehicles, w, h)
                 speech.set_vehicle_priority(traffic_status == "WAIT")
 
