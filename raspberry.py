@@ -208,9 +208,11 @@ CLASS_MIN_CONF = {
     "sliding glass door": 0.20,
     "automatic glass door": 0.30,
     "door handle": 0.40,
-    "doorknob": 0.40,
-    "lever door handle": 0.40,
-    "door knob": 0.40,
+    "doorknob": 0.45,
+    "round spherical metal doorknob mounted on a door": 0.48,
+    "lever door handle": 0.38,
+    "horizontal lever door handle attached to a door": 0.38,
+    "door knob": 0.45,
     "push bar": 0.50,
     "door push button": 0.50,
     "electronic keypad door lock": 0.35,
@@ -1114,48 +1116,56 @@ def prepare_inference_frame(frame):
     return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
 
 
-def guidance_for_detection(det, width):
-    label, _, x1, _, x2, _ = det
+def guidance_for_detection(det, width, all_dets=None):
+    label, _, x1, y1, x2, y2 = det
     pos = zone(x1, x2, width)
 
+    # 1. 자동문 및 미닫이문류
     if label in {"automatic door", "automatic glass door", "automatic glass sliding door"}:
-        return f"{pos} 자동 유리문"
-    if label in {"glass sliding door", "sliding glass door", "manual sliding glass door", "transparent sliding glass door"}:
-        return f"{pos} 유리 미닫이문"
-    if label in {"hinged glass door with a frame", "glass hinged entrance door"}:
-        return f"{pos} 여닫이 유리문"
-    if label == "glass door with a vertical pull handle":
-        return f"{pos} 손잡이형 유리문"
-    if label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
-        return f"{pos} 유리문"
+        return f"{pos} 자동문"
+    if label in {"glass sliding door", "sliding glass door", "manual sliding glass door", "transparent sliding glass door", "sliding door"}:
+        return f"{pos} 미닫이문"
 
-    if label in {"doorknob", "door knob", "door knob mounted on a door", "round doorknob on a door"}:
+    # 2. 독립 손잡이 및 부속품 (짧고 명확하게)
+    if label in {"doorknob", "door knob", "door knob mounted on a door", "round doorknob on a door", "round spherical metal doorknob mounted on a door"}:
         return f"{pos} 원형 문고리"
-    if label in {"push bar", "push bar on a commercial door"}:
+    if label in {"push bar", "push bar on a commercial door", "horizontal panic push bar across a exit door"}:
         return f"{pos} 푸시바"
-    if label in {"lever handle", "lever door handle", "lever door handle attached to a door", "door lever handle on a door"}:
+    if label in {"lever handle", "lever door handle", "lever door handle attached to a door", "horizontal lever door handle attached to a door"}:
         return f"{pos} 레버 손잡이"
-    if label in {"door handle", "door handle mounted on a door", "metal handle attached to a door"}:
+    if label in {"door handle", "door handle mounted on a door", "metal handle attached to a door", "long vertical pull handle bar on a commercial glass door"}:
         return f"{pos} 문손잡이"
-    if label == "door push button":
+    if label in {"door push button", "door push button switch"}:
         return f"{pos} 문 버튼"
     if label in DOOR_LOCK_LABELS or label in LOCK_TYPE_LABELS:
         return f"{pos} 도어락"
 
-    if label in STEEL_DOOR_LABELS:
-        return f"{pos} 철문"
-    if label in {"wooden door"}:
-        return f"{pos} 나무문"
-    if label in {"sliding door"}:
-        return f"{pos} 미닫이문"
-    if label in {"hinged door"}:
-        return f"{pos} 여닫이문"
-    if label == "open door":
-        return f"{pos} 열린 문"
-    if label == "closed door":
-        return f"{pos} 닫힌 문"
-    if label in DOOR_LABELS:
-        return f"{pos} 문"
+    # 3. 일반 문 (나무문, 철문, 일반 문 등) + 손잡이 조합 (간결한 형태)
+    if label in DOOR_LABELS or label in STEEL_DOOR_LABELS or label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
+        door_type = "나무문" if label == "wooden door" else ("철문" if label in STEEL_DOOR_LABELS else ("유리문" if label in GLASS_DOOR_LABELS else "여닫이문"))
+        
+        nearby_component = None
+        if all_dets:
+            for other in all_dets:
+                olabel = other[0]
+                if olabel in DOOR_COMPONENT_LABELS:
+                    ox1, oy1, ox2, oy2 = other[2:6]
+                    ocx, ocy = (ox1 + ox2) / 2.0, (oy1 + oy2) / 2.0
+                    if (x1 - 30) <= ocx <= (x2 + 30) and (y1 - 30) <= ocy <= (y2 + 30):
+                        nearby_component = olabel
+                        break
+
+        if nearby_component:
+            if nearby_component in {"lever door handle", "horizontal lever door handle attached to a door", "lever handle"}:
+                return f"{pos} 레버형 {door_type}"
+            elif nearby_component in {"doorknob", "door knob", "round spherical metal doorknob mounted on a door"}:
+                return f"{pos} 문고리형 {door_type}"
+            elif nearby_component in {"push bar", "push bar on a commercial door"}:
+                return f"{pos} 푸시바 {door_type}"
+            elif nearby_component in {"door push button", "door push button switch"}:
+                return f"{pos} 버튼식 {door_type}"
+
+        return f"{pos} {door_type}"
 
     if label in STAIR_LABELS:
         return f"{pos} 계단"
@@ -1744,7 +1754,16 @@ def main():
                 bw = max(1, x2 - x1)
                 bh = max(1, y2 - y1)
                 aspect = bw / bh
-                y2_ratio = y2 / max(1, h)
+
+                if label in {"doorknob", "door knob", "round spherical metal doorknob mounted on a door"}:
+                    if aspect >= 1.25:
+                        label = "horizontal lever door handle attached to a door"
+                        conf = max(conf, 0.40)
+                        
+                elif label in {"lever handle", "lever door handle", "horizontal lever door handle attached to a door"}:
+                    if aspect < 1.05:
+                        label = "round spherical metal doorknob mounted on a door"
+                        conf = max(conf, 0.40)
 
                 if label in {"scooter", "kick scooter", SCOOTER_PROMPT, PLAIN_SCOOTER_PROMPT}:
                     if aspect >= 1.0 or bh < h * 0.08:
@@ -1848,13 +1867,11 @@ def main():
 
                 if primary is not None:
                     position = zone(primary[2], primary[4], w)
-                    text = guidance_for_detection(primary, w)
+                    text = guidance_for_detection(primary, w, all_dets=all_dets)  # all_dets 추가 전달
                     guidance_key = f"obstacle:{primary[0]}:{position}"
                     if text:
                         speech.say(guidance_key, text, force=(guidance_key != last_guidance_key))
                         last_guidance_key = guidance_key
-                else:
-                    last_guidance_key = None
 
             last_traffic_status = traffic_status
             if state != last_reported_state:
