@@ -175,6 +175,12 @@ LOCK_TYPE_LABELS = {
     "digital keypad smart door lock with numbers",
     "electronic door lock mounted on a door panel",
 }
+DOOR_HANDLE_PROMPTS = [
+    "straight horizontal lever door handle attached to a door",  # 레버 손잡이
+    "round ball-shaped spherical metal doorknob on a door",      # 원형 문고리
+    "digital keypad smart door lock on a door panel",            # 도어락
+    "long vertical pull handle bar on a door",                    # 바 손잡이
+]
 
 CLASS_MIN_CONF = {
     "bed with mattress and pillow": 0.40,
@@ -184,9 +190,9 @@ CLASS_MIN_CONF = {
     "wall covered with square ceramic tiles": 0.44,
     "close-up of a tiled wall": 0.44,
     "wall with a grid of square tiles": 0.44,
-    "refrigerator": 0.58,
-    "refrigerator in a kitchen": 0.58,
-    "large household refrigerator": 0.60,
+    "refrigerator": 0.60,
+    "refrigerator in a kitchen": 0.60,
+    "large household refrigerator": 0.65,
     "shelf": 0.70,
     "bookshelf": 0.70,
     "storage shelf": 0.70,
@@ -202,21 +208,23 @@ CLASS_MIN_CONF = {
     "desk": 0.40,
     "chair": 0.48,
     "door": 0.22,
-    "wooden door": 0.30,
-    "steel door": 0.40,
+    "wooden door": 0.35,
+    "steel door": 0.55,
     "glass entrance door": 0.30,
     "sliding glass door": 0.20,
     "automatic glass door": 0.30,
-    "door handle": 0.40,
-    "doorknob": 0.45,
-    "round spherical metal doorknob mounted on a door": 0.48,
-    "lever door handle": 0.38,
-    "horizontal lever door handle attached to a door": 0.38,
-    "door knob": 0.45,
+    "door handle": 0.35,
+    "doorknob": 0.30,
+    "round spherical metal doorknob mounted on a door": 0.33,
+    "lever door handle": 0.25,
+    "horizontal lever door handle attached to a door": 0.25,
+    "straight horizontal lever door handle attached to a door": 0.25,
+    "door knob": 0.30,
     "push bar": 0.50,
     "door push button": 0.50,
-    "electronic keypad door lock": 0.35,
-    "door lock": 0.40,
+    "digital keypad smart door lock on a door panel": 0.25,
+    "electronic keypad door lock": 0.25,
+    "door lock": 0.30,
     CAR_PROMPT: 0.30,
     CAR_DISTANT_PROMPT: 0.15,
     CAR_FAR_PROMPT: 0.15,
@@ -1056,6 +1064,9 @@ def valid_geometry(det, width, height):
     aspect = bw / bh
     y2_ratio = y2 / max(1, height)
 
+    if label in DOOR_COMPONENT_LABELS or label in DOOR_LOCK_LABELS or label in LOCK_TYPE_LABELS:
+        return bw >= 2 and bh >= 2 and area_ratio <= 0.15
+
     if label in {SCOOTER_PROMPT, PLAIN_SCOOTER_PROMPT, "scooter", "kick scooter", "electric scooter"}:
         return (
             area_ratio >= 0.002 
@@ -1120,53 +1131,70 @@ def guidance_for_detection(det, width, all_dets=None):
     label, _, x1, y1, x2, y2 = det
     pos = zone(x1, x2, width)
 
-    # 1. 자동문 및 미닫이문류
-    if label in {"automatic door", "automatic glass door", "automatic glass sliding door"}:
-        return f"{pos} 자동문"
-    if label in {"glass sliding door", "sliding glass door", "manual sliding glass door", "transparent sliding glass door", "sliding door"}:
-        return f"{pos} 미닫이문"
-
-    # 2. 독립 손잡이 및 부속품 (짧고 명확하게)
-    if label in {"doorknob", "door knob", "door knob mounted on a door", "round doorknob on a door", "round spherical metal doorknob mounted on a door"}:
+    # 1. 독립 부속품 단독 감지 시
+    if label in {"doorknob", "door knob", "door knob mounted on a door", "round doorknob on a door", "round ball-shaped spherical metal doorknob on a door"}:
         return f"{pos} 원형 문고리"
     if label in {"push bar", "push bar on a commercial door", "horizontal panic push bar across a exit door"}:
-        return f"{pos} 푸시바"
-    if label in {"lever handle", "lever door handle", "lever door handle attached to a door", "horizontal lever door handle attached to a door"}:
-        return f"{pos} 레버 손잡이"
+        return f"{pos} 푸시바, 밀으세요"
+    if label in {"lever handle", "lever door handle", "lever door handle attached to a door", "horizontal lever door handle attached to a door", "straight horizontal lever door handle attached to a door"}:
+        return f"{pos} 레버 손잡이, 내리세요"
     if label in {"door handle", "door handle mounted on a door", "metal handle attached to a door", "long vertical pull handle bar on a commercial glass door"}:
         return f"{pos} 문손잡이"
     if label in {"door push button", "door push button switch"}:
-        return f"{pos} 문 버튼"
-    if label in DOOR_LOCK_LABELS or label in LOCK_TYPE_LABELS:
+        return f"{pos} 문 버튼, 누르세요"
+    if label in DOOR_LOCK_LABELS or label in LOCK_TYPE_LABELS or "keypad" in label or "lock" in label:
         return f"{pos} 도어락"
 
-    # 3. 일반 문 (나무문, 철문, 일반 문 등) + 손잡이 조합 (간결한 형태)
+    # 2. 문(Door) 구조체 감지 시
     if label in DOOR_LABELS or label in STEEL_DOOR_LABELS or label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
-        door_type = "나무문" if label == "wooden door" else ("철문" if label in STEEL_DOOR_LABELS else ("유리문" if label in GLASS_DOOR_LABELS else "여닫이문"))
         
-        nearby_component = None
+        # 재질 구분
+        if "glass" in label.lower() or label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
+            door_name = "유리문"
+        elif label == "wooden door":
+            door_name = "나무문"
+        elif label in STEEL_DOOR_LABELS:
+            door_name = "철문"
+        else:
+            door_name = "문"
+
+        # 문 주변(마진 60px로 확대하여 먼 거리 탐색) 부속품 탐색
+        nearby_comp = None
         if all_dets:
             for other in all_dets:
                 olabel = other[0]
-                if olabel in DOOR_COMPONENT_LABELS:
+                if olabel in DOOR_COMPONENT_LABELS or olabel in DOOR_LOCK_LABELS or olabel in LOCK_TYPE_LABELS:
                     ox1, oy1, ox2, oy2 = other[2:6]
                     ocx, ocy = (ox1 + ox2) / 2.0, (oy1 + oy2) / 2.0
-                    if (x1 - 30) <= ocx <= (x2 + 30) and (y1 - 30) <= ocy <= (y2 + 30):
-                        nearby_component = olabel
+                    if (x1 - 60) <= ocx <= (x2 + 60) and (y1 - 60) <= ocy <= (y2 + 60):
+                        nearby_comp = olabel
                         break
 
-        if nearby_component:
-            if nearby_component in {"lever door handle", "horizontal lever door handle attached to a door", "lever handle"}:
-                return f"{pos} 레버형 {door_type}"
-            elif nearby_component in {"doorknob", "door knob", "round spherical metal doorknob mounted on a door"}:
-                return f"{pos} 문고리형 {door_type}"
-            elif nearby_component in {"push bar", "push bar on a commercial door"}:
-                return f"{pos} 푸시바 {door_type}"
-            elif nearby_component in {"door push button", "door push button switch"}:
-                return f"{pos} 버튼식 {door_type}"
+        # A. 버튼/자동문
+        if nearby_comp in {"door push button", "door push button switch"} or label in {"automatic door", "automatic glass door", "automatic glass sliding door"}:
+            return f"{pos} 자동문, 버튼을 누르세요"
 
-        return f"{pos} {door_type}"
+        # B. 미닫이문
+        if nearby_comp in {"recessed handle flush with a sliding door surface", "recessed door handle"} or label in {"glass sliding door", "sliding glass door", "manual sliding glass door", "sliding door"}:
+            return f"{pos} 미닫이문, 옆으로 미세요"
 
+        # C. 확정 손잡이 단서가 조합된 경우
+        if nearby_comp:
+            if nearby_comp in {"lever door handle", "horizontal lever door handle attached to a door", "lever handle", "straight horizontal lever door handle attached to a door"}:
+                return f"{pos} {door_name}, 레버 손잡이를 내리세요"
+            elif nearby_comp in {"doorknob", "door knob", "round spherical metal doorknob mounted on a door", "round ball-shaped spherical metal doorknob on a door"}:
+                return f"{pos} {door_name}, 문고리를 돌리세요"
+            elif nearby_comp in {"push bar", "push bar on a commercial door"}:
+                return f"{pos} {door_name}, 푸시바를 밀으세요"
+            elif nearby_comp in {"door handle", "door handle mounted on a door", "long vertical pull handle bar on a commercial glass door"}:
+                return f"{pos} {door_name}, 손잡이 잡고 당기세요"
+            elif nearby_comp in DOOR_LOCK_LABELS or nearby_comp in LOCK_TYPE_LABELS:
+                return f"{pos} {door_name}, 도어락"
+
+        # D. 단서 없을 때
+        return f"{pos} {door_name}"
+
+    # 3. 기타 사물
     if label in STAIR_LABELS:
         return f"{pos} 계단"
     if label == "elevator":
@@ -1755,15 +1783,23 @@ def main():
                 bh = max(1, y2 - y1)
                 aspect = bw / bh
 
-                if label in {"doorknob", "door knob", "round spherical metal doorknob mounted on a door"}:
-                    if aspect >= 1.25:
-                        label = "horizontal lever door handle attached to a door"
-                        conf = max(conf, 0.40)
+                # [손잡이 상호 교정 정교화]
+                # 1. 원형 문고리로 잡혔으나 가로로 길쭉(aspect >= 1.2)한 경우 -> 레버 손잡이
+                if label in {"doorknob", "door knob", "round spherical metal doorknob mounted on a door", "round ball-shaped spherical metal doorknob on a door"}:
+                    if aspect >= 1.15:
+                        label = "straight horizontal lever door handle attached to a door"
+                        conf = max(conf, 0.35)
                         
-                elif label in {"lever handle", "lever door handle", "horizontal lever door handle attached to a door"}:
-                    if aspect < 1.05:
-                        label = "round spherical metal doorknob mounted on a door"
-                        conf = max(conf, 0.40)
+                # 레버로 잡혔지만 정사각형/둥근 형태(aspect <= 1.05) ➔ 원형 손잡이
+                elif label in {"lever handle", "lever door handle", "horizontal lever door handle attached to a door", "straight horizontal lever door handle attached to a door"}:
+                    if aspect <= 1.05:
+                        label = "round ball-shaped spherical metal doorknob on a door"
+                        conf = max(conf, 0.35)
+
+                # [냉장고 vs 철문 교정] 냉장고로 잡혔으나 높이가 방 전체 문(bh > h * 0.7) 수준이면 철문/문으로 변경
+                if label in {"refrigerator", "refrigerator in a kitchen", "large household refrigerator"}:
+                    if bh >= h * 0.70:
+                        label = "steel door"
 
                 if label in {"scooter", "kick scooter", SCOOTER_PROMPT, PLAIN_SCOOTER_PROMPT}:
                     if aspect >= 1.0 or bh < h * 0.08:
