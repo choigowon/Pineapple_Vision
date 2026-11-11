@@ -89,7 +89,6 @@ STAIR_PROMPTS = [
     "descending or ascending staircase structure",
 ]
 
-# 문 스티커 / 표지판 프롬프트 (미세요, 당기세요, 숫자 타겟)
 TEXT_SIGN_PROMPTS = [
     "push or pull sign sticker on a door",
     "room number sign plate with numbers",
@@ -102,8 +101,7 @@ MOTORCYCLE_PROMPT = "motorcycle on a road"
 PLAIN_SCOOTER_PROMPT = "scooter on a road"
 CAR_DISTANT_PROMPT = "distant passenger car"
 CAR_FAR_PROMPT = "far away vehicle"
-# TOY_CAR_PROMPT = "toy car, miniature vehicle model, or diecast car"
-# TOY_VEHICLE_PROMPT = "small toy car on a floor or table"
+
 TOY_CAR_PROMPT = "miniature toy car or plastic model vehicle on floor"
 TOY_VEHICLE_PROMPT = "small toy vehicle model"
 MOTORCYCLE_RIDER_PROMPT = "motorcycle with a rider on a road"
@@ -116,7 +114,7 @@ HANGER_PROMPTS = {
     "indoor garment rack with clothes hanging from it",
 }
 HANGER_LABELS = HANGER_PROMPTS
-RAILING_LABELS = {"railing", "guardrail"}
+RAILING_LABELS = {"railing"}
 GLASS_DOOR_LABELS = {
     "glass door", "transparent glass door", "clear glass door",
     "glass entrance door", "large glass entrance door",
@@ -124,7 +122,7 @@ GLASS_DOOR_LABELS = {
     "glass panel door", "framed glass door", "glass door with metal frame",
     "transparent sliding glass door", "sliding glass entrance door",
     "front view of a glass door", "glass door at a building entrance",
-    "automatic glass door", "glass entrance door with visible handle",
+    "glass entrance door with visible handle",
     "transparent glass door in a metal frame",
     "glass door panel with vertical pull handle",
     "glass entrance door viewed from outside with a doorway and frame",
@@ -152,37 +150,77 @@ DOOR_LOCK_LABELS = {
     "door lock", "door lock with handle", "keypad door lock",
     "electronic keypad door lock", "deadbolt lock on a door", "door lever lock",
 }
-# WINDOW_LABELS = {"window", "glass window", "building window", "exterior window"}
+
 STEEL_DOOR_LABELS = {
     "steel door", "metal door", "metal entrance door", "metal security door",
     "steel entrance door with visible handle",
     "metal security door in building entrance",
     "closed metal entrance door", "metal door with a handle",
 }
+
+SLIDING_DOOR_LABELS = {
+    "sliding door", "glass sliding door", "sliding glass door", "manual sliding glass door",
+    "automatic glass sliding door",
+}
+
 GLASS_DOOR_TYPE_LABELS = {
-    "automatic glass sliding door", "hinged glass door with a frame",
-    "glass hinged entrance door", "manual sliding glass door",
+    "hinged glass door with a frame",
+    "glass hinged entrance door",
     "glass door with a vertical pull handle",
+    *SLIDING_DOOR_LABELS
 }
+
+SUITCASE_PROMPTS = {
+    "suitcase",
+    "wheeled luggage suitcase",
+    "rolling suitcase",
+    "trolley bag suitcase",
+    "wheeled travel suitcase",
+}
+
+LEVER_HANDLE_PROMPT = "metal horizontal lever handle on door"
+ROUND_KNOB_PROMPT = "round spherical doorknob"
+PULL_BAR_PROMPT = "long vertical metallic door handle bar"
+PUSH_BAR_PROMPT = "horizontal exit push bar installed across a door"
+DOOR_LOCK_PROMPT = "digital keypad smart door lock on a door panel"
+DOOR_BUTTON_PROMPT = "door push button switch"
+
 HANDLE_TYPE_LABELS = {
-    "round spherical metal doorknob mounted on a door",
-    "horizontal lever door handle attached to a door",
+    ROUND_KNOB_PROMPT,
+    LEVER_HANDLE_PROMPT,
+    PULL_BAR_PROMPT,
+    PUSH_BAR_PROMPT,
     "recessed handle flush with a sliding door surface",
-    "long vertical pull handle bar on a commercial glass door",
-    "horizontal panic push bar across a exit door",
 }
+
 LOCK_TYPE_LABELS = {
-    "digital keypad smart door lock with numbers",
-    "electronic door lock mounted on a door panel",
+    DOOR_LOCK_PROMPT,
 }
-DOOR_HANDLE_PROMPTS = [
-    "straight horizontal lever door handle attached to a door",  # 레버 손잡이
-    "round ball-shaped spherical metal doorknob on a door",      # 원형 문고리
-    "digital keypad smart door lock on a door panel",            # 도어락
-    "long vertical pull handle bar on a door",                    # 바 손잡이
-]
 
 CLASS_MIN_CONF = {
+    # 캐리어 / 가방 임계값
+    **{label: 0.42 for label in SUITCASE_PROMPTS},
+    "electric fan": 0.38,
+    "bag": 0.48,
+    "backpack": 0.48,
+
+    # 의자 및 자전거 인식 빡세게 조정 (임계값 상향)
+    "chair": 0.55,
+    "bicycle": 0.58,
+
+    # 문버튼 및 오만 사물 오인식 방지 (임계값 상향)
+    DOOR_BUTTON_PROMPT: 0.58,
+    LEVER_HANDLE_PROMPT: 0.38,
+    ROUND_KNOB_PROMPT: 0.38,
+    PULL_BAR_PROMPT: 0.38,
+    PUSH_BAR_PROMPT: 0.42,
+
+    # 미닫이문 감지 민감도 유지
+    "sliding glass door": 0.20,
+    "glass sliding door": 0.20,
+    "manual sliding glass door": 0.20,
+    "sliding door": 0.20,
+
     "bed with mattress and pillow": 0.40,
     "bed with visible mattress, pillow and blanket in a bedroom": 0.40,
     "tiled wall": 0.42,
@@ -200,31 +238,16 @@ CLASS_MIN_CONF = {
     "wardrobe": 0.32,
     "closet": 0.32,
     **{label: 0.56 for label in HANGER_PROMPTS},
-    # "window": 0.38,
-    # "glass window": 0.40,
-    # "building window": 0.40,
-    # "exterior window": 0.42,
     "box": 0.55,
     "desk": 0.40,
-    "chair": 0.48,
     "door": 0.22,
     "wooden door": 0.35,
     "steel door": 0.55,
     "glass entrance door": 0.30,
-    "sliding glass door": 0.20,
-    "automatic glass door": 0.30,
-    "door handle": 0.35,
-    "doorknob": 0.30,
-    "round spherical metal doorknob mounted on a door": 0.33,
-    "lever door handle": 0.25,
-    "horizontal lever door handle attached to a door": 0.25,
-    "straight horizontal lever door handle attached to a door": 0.25,
-    "door knob": 0.30,
-    "push bar": 0.50,
-    "door push button": 0.50,
-    "digital keypad smart door lock on a door panel": 0.25,
-    "electronic keypad door lock": 0.25,
-    "door lock": 0.30,
+    "automatic glass door": 0.42,
+    "digital keypad smart door lock on a door panel": 0.28,
+    "electronic keypad door lock": 0.28,
+    "door lock": 0.32,
     CAR_PROMPT: 0.30,
     CAR_DISTANT_PROMPT: 0.15,
     CAR_FAR_PROMPT: 0.15,
@@ -235,8 +258,8 @@ CLASS_MIN_CONF = {
     MOTORCYCLIST_PROMPT: 0.15,
     PLAIN_SCOOTER_PROMPT: 0.25,
     SCOOTER_RIDER_PROMPT: 0.15,
-    TOY_CAR_PROMPT: 0.22,
-    TOY_VEHICLE_PROMPT: 0.22,
+    TOY_CAR_PROMPT: 0.25,
+    TOY_VEHICLE_PROMPT: 0.25,
     "motorcycle": 0.17,
     "motorbike": 0.17,
     "car": 0.30,
@@ -244,7 +267,6 @@ CLASS_MIN_CONF = {
     "kick scooter": 0.25,
     "electric scooter": 0.17,
     "electric kick scooter": 0.17,
-    "bicycle": 0.52,
     "person": 0.42,
     "stairs": 0.34,
     "staircase": 0.34,
@@ -276,12 +298,12 @@ for prompt in TEXT_SIGN_PROMPTS:
     CLASS_MIN_CONF[prompt] = 0.18
 
 PROMPTS = [
+    *sorted(SUITCASE_PROMPTS), "electric fan", "bag", "backpack",
     "box", "desk", "chair",
     "bed with mattress and pillow",
     "bed with visible mattress, pillow and blanket in a bedroom",
     "shelf", "bookshelf", "storage shelf", "freestanding storage shelf", "wardrobe", "closet",
     "refrigerator", "refrigerator in a kitchen", "large household refrigerator",
-    # "window", "glass window", "building window", "exterior window",
     *sorted(HANGER_PROMPTS),
     *sorted(WALL_SURFACE_LABELS),
     "tree", CAR_PROMPT, "car", CAR_DISTANT_PROMPT, CAR_FAR_PROMPT,
@@ -289,11 +311,17 @@ PROMPTS = [
     SCOOTER_PROMPT, PLAIN_SCOOTER_PROMPT, SCOOTER_RIDER_PROMPT, "scooter",
     MOTORCYCLE_PROMPT, MOTORCYCLE_RIDER_PROMPT, MOTORCYCLE_DISTANT_PROMPT,
     MOTORCYCLIST_PROMPT, "motorcycle", "bollard",
-    "utility pole", "bicycle", "person", "curb", "railing", "guardrail",
+    "utility pole", "bicycle", "person", "curb", "railing",
     "door", "entrance door", "interior door", "wooden door", "closed door", "open door",
-    "door", "wooden door", "steel door", "glass entrance door", "sliding glass door", "automatic glass door",
-    "door handle", "doorknob", "lever door handle", "door knob",
-    "push bar on a door", "automatic door push button", "electronic keypad door lock", "door lock",
+    "steel door", "glass entrance door", "sliding glass door", "automatic glass door", "glass sliding door", "manual sliding glass door", "sliding door",
+    
+    LEVER_HANDLE_PROMPT,
+    ROUND_KNOB_PROMPT,
+    DOOR_LOCK_PROMPT,
+    PULL_BAR_PROMPT,
+    PUSH_BAR_PROMPT,
+    DOOR_BUTTON_PROMPT,
+    
     *STAIR_PROMPTS,
     "elevator", "elevator safety warning sticker", "elevator safety notice",
     *CROSSWALK_PROMPTS,
@@ -307,25 +335,17 @@ for prompt in STAIR_PROMPTS:
 
 DOOR_LABELS = {
     "door", "entrance door", "interior door", "wooden door", "closed door", "open door",
-    "sliding door", "glass sliding door", "sliding glass door",
+    "sliding door", "glass sliding door", "sliding glass door", "manual sliding glass door",
     *sorted(GLASS_DOOR_TYPE_LABELS),
     "automatic door", "glass door", "hinged door",
     *GLASS_DOOR_LABELS, *STEEL_DOOR_LABELS,
 }
 
 DOOR_COMPONENT_LABELS = {
-    *sorted(HANDLE_TYPE_LABELS),
-    *sorted(LOCK_TYPE_LABELS),
-    "door push button switch",
+    *HANDLE_TYPE_LABELS,
+    *LOCK_TYPE_LABELS,
+    DOOR_BUTTON_PROMPT,
 }
-
-for handle_prompt in HANDLE_TYPE_LABELS:
-    CLASS_MIN_CONF[handle_prompt] = 0.48
-
-for lock_prompt in LOCK_TYPE_LABELS:
-    CLASS_MIN_CONF[lock_prompt] = 0.45
-
-CLASS_MIN_CONF["door push button switch"] = 0.45
 
 STAIR_LABELS = {
     "stairs", "staircase", "stairway steps", "stair steps on a staircase",
@@ -361,6 +381,10 @@ HANDLE_MIN_CONF = 0.18
 DOOR_MIN_CONF = 0.15
 
 KOREAN_LABELS = {
+    **{label: "캐리어" for label in SUITCASE_PROMPTS},
+    "electric fan": "선풍기",
+    "bag": "가방",
+    "backpack": "가방",
     "box": "상자",
     "desk": "책상",
     **{label: "행거" for label in HANGER_PROMPTS},
@@ -376,10 +400,6 @@ KOREAN_LABELS = {
     "refrigerator": "냉장고",
     "refrigerator in a kitchen": "냉장고",
     "large household refrigerator": "냉장고",
-    # "window": "창문",
-    # "glass window": "창문",
-    # "building window": "창문",
-    # "exterior window": "창문",
     **{label: "철문" for label in STEEL_DOOR_LABELS},
     "tree": "나무",
     "car": "차량",
@@ -399,7 +419,6 @@ KOREAN_LABELS = {
     "motorbike": "오토바이",
     "curb": "연석",
     "railing": "난간",
-    "guardrail": "가드레일",
     "scooter": "킥보드",
     "kick scooter": "킥보드",
     "electric scooter": "전동 킥보드",
@@ -424,25 +443,15 @@ KOREAN_LABELS = {
     "stairs going down": "계단",
     "staircase descending from above": "계단",
     "stair landing": "계단",
-    "doorknob": "원형 문고리",
-    "door knob": "원형 문고리",
-    "door handle": "문손잡이",
-    "lever handle": "레버 손잡이",
-    "lever door handle": "레버 손잡이",
-    "fingerprint door lock": "도어락",
-    "smart door lock with keypad": "도어락",
-    "round doorknob on a door": "원형 문고리",
-    "lever door handle attached to a door": "레버 손잡이",
-    "push bar on a commercial door": "푸시바",
-    "push bar": "푸시바",
-    "door push button": "문 버튼",
-    "recessed door handle": "매립 손잡이",
-    "door lock": "도어락",
-    "door lock with handle": "도어락",
-    "keypad door lock": "도어락",
-    "electronic keypad door lock": "도어락",
-    "deadbolt lock on a door": "도어락",
-    "door lever lock": "도어락",
+
+    ROUND_KNOB_PROMPT: "원형 문고리",
+    LEVER_HANDLE_PROMPT: "레버 손잡이",
+    DOOR_LOCK_PROMPT: "도어락",
+    PULL_BAR_PROMPT: "문손잡이",
+    PUSH_BAR_PROMPT: "푸시바",
+    DOOR_BUTTON_PROMPT: "문 버튼",
+    "recessed handle flush with a sliding door surface": "매립 손잡이",
+
     "entrance door": "출입문",
     "interior door": "실내 문",
     "wooden door": "나무 문",
@@ -454,18 +463,11 @@ KOREAN_LABELS = {
     "glass sliding door": "유리 미닫이문",
     "sliding glass door": "유리 미닫이문",
     "manual sliding glass door": "유리 미닫이문",
+    "sliding door": "미닫이문",
     "hinged glass door with a frame": "여닫이 유리문",
     "glass hinged entrance door": "여닫이 유리문",
     "glass door with a vertical pull handle": "손잡이형 유리문",
     **{label: "유리문" for label in GLASS_DOOR_LABELS},
-    "round spherical metal doorknob mounted on a door": "원형 문고리",
-    "horizontal lever door handle attached to a door": "레버 손잡이",
-    "recessed handle flush with a sliding door surface": "매립 손잡이",
-    "long vertical pull handle bar on a commercial glass door": "문손잡이",
-    "horizontal panic push bar across a exit door": "푸시바",
-    "digital keypad smart door lock with numbers": "도어락",
-    "electronic door lock mounted on a door panel": "도어락",
-    "door push button switch": "문 버튼",
 }
 
 class AsyncOCRReader:
@@ -484,7 +486,18 @@ class AsyncOCRReader:
         except queue.Full:
             pass
 
+    def _preprocess_variants(self, roi_img):
+        gray = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
+        gray = cv2.resize(gray, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+        denoised = cv2.bilateralFilter(gray, 9, 75, 75)
+        _, thresh1 = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        thresh2 = cv2.bitwise_not(thresh1)
+        return [thresh1, thresh2]
+
     def _worker(self):
+        config_text = r'--oem 3 --psm 7 -l kor+eng'
+        config_num = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
+
         while self.running:
             try:
                 roi_img = self.job_queue.get(timeout=0.2)
@@ -492,26 +505,34 @@ class AsyncOCRReader:
                 continue
 
             try:
-                # 1. 흑백 변환 및 3배 확대
-                gray = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
-                gray = cv2.resize(gray, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+                variants = self._preprocess_variants(roi_img)
+                found_sign = False
 
-                # 2. 대비 극대화 (선명한 흑백 전처리)
-                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                for img in variants:
+                    text = pytesseract.image_to_string(img, config=config_text).strip()
+                    upper_text = text.upper().replace(" ", "")
 
-                # 3. PSM 6 적용 (단일 텍스트 블록/스티커 전용)
-                text = pytesseract.image_to_string(thresh, lang='kor+eng', config='--psm 6').strip()
-                upper_text = text.upper()
+                    if any(k in text for k in ["당기", "당기세요", "당림", "당"]) or any(k in upper_text for k in ["PULL", "FULL", "POLI"]):
+                        self.speech.say("ocr_pull", "문 당기세요")
+                        found_sign = True
+                        break
+                    elif any(k in text for k in ["미세요", "밀으세요", "미세", "밀어", "밀"]) or any(k in upper_text for k in ["PUSH", "POSH", "BUSH"]):
+                        self.speech.say("ocr_push", "문 미세요")
+                        found_sign = True
+                        break
 
-                # 4. 키워드 조건 완화
-                if any(k in text for k in ["당기", "당", "PULL"]) or "PULL" in upper_text:
-                    self.speech.say("ocr_pull", "문 당기세요")
-                elif any(k in text for k in ["미", "밀", "PUSH"]) or "PUSH" in upper_text:
-                    self.speech.say("ocr_push", "문 미세요")
-                else:
-                    digits = "".join([c for c in text if c.isdigit()])
-                    if len(digits) >= 2:
-                        self.speech.say(f"ocr_num_{digits}", f"숫자 {digits}")
+                if not found_sign:
+                    digits_list = []
+                    for img in variants:
+                        num_text = pytesseract.image_to_string(img, config=config_num).strip()
+                        digits = "".join([c for c in num_text if c.isdigit()])
+                        if digits:
+                            digits_list.append(digits)
+
+                    if digits_list:
+                        best_digits = max(digits_list, key=len)
+                        if len(best_digits) >= 1:
+                            self.speech.say(f"ocr_num_{best_digits}", f"숫자 {best_digits}")
 
             except Exception:
                 pass
@@ -1064,8 +1085,26 @@ def valid_geometry(det, width, height):
     aspect = bw / bh
     y2_ratio = y2 / max(1, height)
 
+    # 의자 및 자전거 기하학적 조건 빡세게 설정
+    if label == "chair":
+        return area_ratio >= 0.015 and bh >= height * 0.12 and 0.35 <= aspect <= 2.2
+
+    if label == "bicycle":
+        return area_ratio >= 0.02 and bw >= width * 0.15 and 0.60 <= aspect <= 3.0
+
+    # 문버튼 오인식 억제 조건 (크기가 너무 크거나 길쭉한 거 제외)
+    if label == DOOR_BUTTON_PROMPT:
+        return bw >= 3 and bh >= 3 and area_ratio <= 0.015 and 0.4 <= aspect <= 2.5
+
+    # 손잡이 기하학 조건 강화
     if label in DOOR_COMPONENT_LABELS or label in DOOR_LOCK_LABELS or label in LOCK_TYPE_LABELS:
-        return bw >= 2 and bh >= 2 and area_ratio <= 0.15
+        return bw >= 4 and bh >= 4 and 0.0003 <= area_ratio <= 0.06 and 0.15 <= aspect <= 6.5
+
+    if label in SUITCASE_PROMPTS:
+        return 0.012 <= area_ratio <= 0.45 and bh >= height * 0.12 and 0.30 <= aspect <= 2.2
+
+    if label in {"bag", "backpack"}:
+        return 0.008 <= area_ratio <= 0.35 and bh >= height * 0.10 and 0.35 <= aspect <= 2.0
 
     if label in {SCOOTER_PROMPT, PLAIN_SCOOTER_PROMPT, "scooter", "kick scooter", "electric scooter"}:
         return (
@@ -1106,8 +1145,6 @@ def valid_geometry(det, width, height):
         return area_ratio >= ELEVATOR_MIN_AREA_RATIO and bw >= width * ELEVATOR_MIN_WIDTH_RATIO and bh >= height * 0.20
     if label in ELEVATOR_SUPPORT_LABELS:
         return area_ratio >= 0.00015 and area_ratio <= 0.08
-    if label in DOOR_COMPONENT_LABELS:
-        return bw >= 4 and bh >= 4 and area_ratio <= 0.08
     if label in STAIR_LABELS:
         return (area_ratio >= 0.003 or bw >= width * 0.05
                 or bh >= height * 0.04)
@@ -1131,24 +1168,12 @@ def guidance_for_detection(det, width, all_dets=None):
     label, _, x1, y1, x2, y2 = det
     pos = zone(x1, x2, width)
 
-    # 1. 독립 부속품 단독 감지 시
-    if label in {"doorknob", "door knob", "door knob mounted on a door", "round doorknob on a door", "round ball-shaped spherical metal doorknob on a door"}:
-        return f"{pos} 원형 문고리"
-    if label in {"push bar", "push bar on a commercial door", "horizontal panic push bar across a exit door"}:
-        return f"{pos} 푸시바, 밀으세요"
-    if label in {"lever handle", "lever door handle", "lever door handle attached to a door", "horizontal lever door handle attached to a door", "straight horizontal lever door handle attached to a door"}:
-        return f"{pos} 레버 손잡이, 내리세요"
-    if label in {"door handle", "door handle mounted on a door", "metal handle attached to a door", "long vertical pull handle bar on a commercial glass door"}:
-        return f"{pos} 문손잡이"
-    if label in {"door push button", "door push button switch"}:
-        return f"{pos} 문 버튼, 누르세요"
-    if label in DOOR_LOCK_LABELS or label in LOCK_TYPE_LABELS or "keypad" in label or "lock" in label:
-        return f"{pos} 도어락"
+    # 1. 미닫이문 직통 판별 (유리문/자동문 판별 조건 완벽 차단)
+    if label in SLIDING_DOOR_LABELS or "sliding" in label.lower():
+        return f"{pos} 미닫이문, 옆으로 미세요"
 
-    # 2. 문(Door) 구조체 감지 시
+    # 2. 기타 문 구조체 판별
     if label in DOOR_LABELS or label in STEEL_DOOR_LABELS or label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
-        
-        # 재질 구분
         if "glass" in label.lower() or label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
             door_name = "유리문"
         elif label == "wooden door":
@@ -1158,43 +1183,51 @@ def guidance_for_detection(det, width, all_dets=None):
         else:
             door_name = "문"
 
-        # 문 주변(마진 60px로 확대하여 먼 거리 탐색) 부속품 탐색
-        nearby_comp = None
+        nearby_handle = None
+        has_button = False
+
         if all_dets:
             for other in all_dets:
                 olabel = other[0]
-                if olabel in DOOR_COMPONENT_LABELS or olabel in DOOR_LOCK_LABELS or olabel in LOCK_TYPE_LABELS:
+                if olabel in DOOR_COMPONENT_LABELS:
                     ox1, oy1, ox2, oy2 = other[2:6]
                     ocx, ocy = (ox1 + ox2) / 2.0, (oy1 + oy2) / 2.0
-                    if (x1 - 60) <= ocx <= (x2 + 60) and (y1 - 60) <= ocy <= (y2 + 60):
-                        nearby_comp = olabel
-                        break
+                    if (x1 - 80) <= ocx <= (x2 + 80) and (y1 - 80) <= ocy <= (y2 + 80):
+                        if olabel in HANDLE_TYPE_LABELS:
+                            nearby_handle = olabel
+                        elif olabel == DOOR_BUTTON_PROMPT:
+                            has_button = True
 
-        # A. 버튼/자동문
-        if nearby_comp in {"door push button", "door push button switch"} or label in {"automatic door", "automatic glass door", "automatic glass sliding door"}:
-            return f"{pos} 자동문, 버튼을 누르세요"
-
-        # B. 미닫이문
-        if nearby_comp in {"recessed handle flush with a sliding door surface", "recessed door handle"} or label in {"glass sliding door", "sliding glass door", "manual sliding glass door", "sliding door"}:
-            return f"{pos} 미닫이문, 옆으로 미세요"
-
-        # C. 확정 손잡이 단서가 조합된 경우
-        if nearby_comp:
-            if nearby_comp in {"lever door handle", "horizontal lever door handle attached to a door", "lever handle", "straight horizontal lever door handle attached to a door"}:
+        if nearby_handle:
+            if nearby_handle == LEVER_HANDLE_PROMPT:
                 return f"{pos} {door_name}, 레버 손잡이를 내리세요"
-            elif nearby_comp in {"doorknob", "door knob", "round spherical metal doorknob mounted on a door", "round ball-shaped spherical metal doorknob on a door"}:
+            elif nearby_handle == ROUND_KNOB_PROMPT:
                 return f"{pos} {door_name}, 문고리를 돌리세요"
-            elif nearby_comp in {"push bar", "push bar on a commercial door"}:
+            elif nearby_handle == PUSH_BAR_PROMPT:
                 return f"{pos} {door_name}, 푸시바를 밀으세요"
-            elif nearby_comp in {"door handle", "door handle mounted on a door", "long vertical pull handle bar on a commercial glass door"}:
+            elif nearby_handle == PULL_BAR_PROMPT:
                 return f"{pos} {door_name}, 손잡이 잡고 당기세요"
-            elif nearby_comp in DOOR_LOCK_LABELS or nearby_comp in LOCK_TYPE_LABELS:
-                return f"{pos} {door_name}, 도어락"
 
-        # D. 단서 없을 때
+        if has_button or label in {"automatic door", "automatic glass door"}:
+            if has_button:
+                return f"{pos} 자동문, 버튼을 누르세요"
+            return f"{pos} 자동문"
+
         return f"{pos} {door_name}"
 
-    # 3. 기타 사물
+    # 3. 손잡이 단독 감지 (검증 통과 건만)
+    if label in HANDLE_TYPE_LABELS:
+        if label == LEVER_HANDLE_PROMPT:
+            return f"{pos} 레버 손잡이, 내리세요"
+        elif label == ROUND_KNOB_PROMPT:
+            return f"{pos} 원형 문고리"
+        elif label == PUSH_BAR_PROMPT:
+            return f"{pos} 푸시바, 밀으세요"
+        elif label == PULL_BAR_PROMPT:
+            return f"{pos} 문손잡이"
+        return f"{pos} 문손잡이"
+
+    # 4. 기타 장애물
     if label in STAIR_LABELS:
         return f"{pos} 계단"
     if label == "elevator":
@@ -1262,9 +1295,7 @@ class CrosswalkSafety:
     def __init__(self):
         self.status = "CLEAR"
         self.stopped_vehicle_tracks = []
-        # 차량 감지 안 될 때 기존 정지 메모리 유지 시간 (1.8초)
         self.HOLD_SECONDS = 1.8
-        # 차가 완전히 멈췄다고 확정짓기 위해 필요한 최소 체류 시간 (0.7초)
         self.STATIONARY_CONFIRM_SECONDS = 0.8
 
     def reset(self):
@@ -1274,19 +1305,17 @@ class CrosswalkSafety:
     def update(self, vehicles, width, height, now=None):
         now = time.monotonic() if now is None else now
 
-        # 1. 1.8초 동안 재감지되지 않은 오래된 정지 메모리 정리
         self.stopped_vehicle_tracks = [
             tr for tr in self.stopped_vehicle_tracks
             if now - tr["last_seen"] <= self.HOLD_SECONDS
         ]
 
-        # 2. 감지된 차가 없으면 기존 메모리 기반으로 CLEAR 반환
         if not vehicles:
             self.status = "CLEAR"
             return "CLEAR", False
 
         moving_vehicle_count = 0
-        MAX_DIST_SQ = 0.0064  # 중심점 변동 허용 범위 제곱값
+        MAX_DIST_SQ = 0.0064
         inv_w = 1.0 / max(1, width)
         inv_h = 1.0 / max(1, height)
 
@@ -1306,15 +1335,12 @@ class CrosswalkSafety:
                     break
 
             if matched_track is not None:
-                # 기존 트랙에 매칭됨: 중심점 및 시간 갱신
                 matched_track["center"] = (cx, cy)
                 matched_track["last_seen"] = now
                 
-                # 정지 체류 시간이 0.7초 미만이면 아직 멈춘 차로 인정 안함 (움직이는 차로 간주)
                 if now - matched_track["first_seen"] < self.STATIONARY_CONFIRM_SECONDS:
                     moving_vehicle_count += 1
             else:
-                # 완벽히 새로 나타난 차: 새로 관찰 시작 등록만 하고 '이동 차'로 분류
                 self.stopped_vehicle_tracks.append({
                     "center": (cx, cy),
                     "first_seen": now,
@@ -1322,12 +1348,10 @@ class CrosswalkSafety:
                 })
                 moving_vehicle_count += 1
 
-        # 3. 0.7초 이상 멈춰서지 않은 '이동 중인 차'가 1대라도 있으면 즉시 WAIT 유지
         if moving_vehicle_count > 0:
             self.status = "WAIT"
             return "WAIT", True
 
-        # 4. 화면의 모든 차가 0.7초 이상 제자리에 멈춰있음이 확정된 경우에만 안정적으로 CLEAR 출력
         self.status = "CLEAR"
         return "CLEAR", False
 
@@ -1461,16 +1485,15 @@ class DoorComponentConfirm:
         self.previous = []
 
     @staticmethod
-    def is_inside_or_near_door(component, doors, max_pixel_margin=30):
-        # 문 감지 결과가 하나도 없는 상황이면 무분별한 오탐지 방지를 위해 손잡이 거부
+    def is_inside_or_near_door(component, doors, max_pixel_margin=60):
+        # 문 프레임이 잡히지 않은 독립 상황 시 0.55 미만의 허수가 손잡이로 판별되는 것 금지
         if not doors:
-            return False
+            return component[1] >= 0.55
             
         cx, cy = (component[2] + component[4]) / 2.0, (component[3] + component[5]) / 2.0
         
         for door in doors:
             dx1, dy1, dx2, dy2 = door[2:6]
-            # 손잡이 중심점이 문 영역(여유 마진 포함) 내에 포함되어 있는지 확인
             if (dx1 - max_pixel_margin) <= cx <= (dx2 + max_pixel_margin) and \
                (dy1 - max_pixel_margin) <= cy <= (dy2 + max_pixel_margin):
                 return True
@@ -1481,14 +1504,12 @@ class DoorComponentConfirm:
         raw_components = [
             d for d in detections
             if d[0] in DOOR_COMPONENT_LABELS
-            and d[1] >= CLASS_MIN_CONF.get(d[0], 0.45)
+            and d[1] >= CLASS_MIN_CONF.get(d[0], 0.38)
         ]
         
-        # 전체 감지된 문 후보(미확정 포함) 추출
         all_doors = [d for d in detections if d[0] in DOOR_LABELS] + confirmed_doors
 
         for comp in raw_components:
-            # 문 영역 내부/근처에 위치한 손잡이만 최종 승인
             if self.is_inside_or_near_door(comp, all_doors):
                 candidates.append(comp)
 
@@ -1783,20 +1804,14 @@ def main():
                 bh = max(1, y2 - y1)
                 aspect = bw / bh
 
-                # [손잡이 상호 교정 정교화]
-                # 1. 원형 문고리로 잡혔으나 가로로 길쭉(aspect >= 1.2)한 경우 -> 레버 손잡이
-                if label in {"doorknob", "door knob", "round spherical metal doorknob mounted on a door", "round ball-shaped spherical metal doorknob on a door"}:
+                if label in {ROUND_KNOB_PROMPT, LEVER_HANDLE_PROMPT, PULL_BAR_PROMPT}:
                     if aspect >= 1.15:
-                        label = "straight horizontal lever door handle attached to a door"
+                        label = LEVER_HANDLE_PROMPT
                         conf = max(conf, 0.35)
-                        
-                # 레버로 잡혔지만 정사각형/둥근 형태(aspect <= 1.05) ➔ 원형 손잡이
-                elif label in {"lever handle", "lever door handle", "horizontal lever door handle attached to a door", "straight horizontal lever door handle attached to a door"}:
-                    if aspect <= 1.05:
-                        label = "round ball-shaped spherical metal doorknob on a door"
+                    elif aspect <= 1.05:
+                        label = ROUND_KNOB_PROMPT
                         conf = max(conf, 0.35)
 
-                # [냉장고 vs 철문 교정] 냉장고로 잡혔으나 높이가 방 전체 문(bh > h * 0.7) 수준이면 철문/문으로 변경
                 if label in {"refrigerator", "refrigerator in a kitchen", "large household refrigerator"}:
                     if bh >= h * 0.70:
                         label = "steel door"
@@ -1808,10 +1823,10 @@ def main():
 
                 det = (label, conf, x1, y1, x2, y2)
 
-                # 문 스티커/숫자 표지판 영역이 감지되었을 때 백그라운드 OCR 요청 (지연 0초)
                 if label in TEXT_SIGN_PROMPTS and conf >= CLASS_MIN_CONF.get(label, 0.18):
-                    rx1, ry1 = max(0, x1 - 5), max(0, y1 - 5)
-                    rx2, ry2 = min(w, x2 + 5), min(h, y2 + 5)
+                    padding = 15
+                    rx1, ry1 = max(0, x1 - padding), max(0, y1 - padding)
+                    rx2, ry2 = min(w, x2 + padding), min(h, y2 + padding)
                     crop_img = frame[ry1:ry2, rx1:rx2]
                     if crop_img.shape[0] > 10 and crop_img.shape[1] > 10:
                         ocr_reader.request_ocr(crop_img)
@@ -1853,7 +1868,6 @@ def main():
             ultrasonic.update_warning(ultrasonic_distance_cm, active=general_mode)
 
             if state == "CROSSWALK":
-                # 횡단보도 상태로 처음 변경되었거나 재탐지될 때 기존 정지 차 메모리 리셋
                 if last_reported_state != "CROSSWALK":
                     crosswalk_safety.reset()
                     speech.say("crosswalk_front", "정면 횡단보도", force=True)
@@ -1903,7 +1917,7 @@ def main():
 
                 if primary is not None:
                     position = zone(primary[2], primary[4], w)
-                    text = guidance_for_detection(primary, w, all_dets=all_dets)  # all_dets 추가 전달
+                    text = guidance_for_detection(primary, w, all_dets=all_dets)
                     guidance_key = f"obstacle:{primary[0]}:{position}"
                     if text:
                         speech.say(guidance_key, text, force=(guidance_key != last_guidance_key))
