@@ -47,9 +47,9 @@ URGENT_SPEECH_COOLDOWN = 0.12
 
 CROSSWALK_VEHICLE_MIN_CONF = 0.10
 CROSSWALK_CLEAR_SECONDS = 2.0
-CROSSWALK_MIN_CONF = 0.18
+CROSSWALK_MIN_CONF = 0.25
 CROSSWALK_ENTER_CONFIRM_SECONDS = 0.4
-CROSSWALK_EXIT_HOLD_SECONDS = 3.0
+CROSSWALK_EXIT_HOLD_SECONDS = 2.5
 CROSSWALK_DETECTION_GAP_SECONDS = 2.0
 
 VEHICLE_FRAME_HOLD_SECONDS = 0.5
@@ -59,7 +59,7 @@ VEHICLE_CENTER_TOLERANCE = 0.035
 VEHICLE_ASSOCIATION_GAP = 0.22
 CROSSWALK_ZONE_COUNT = 4
 CROSSWALK_REPEAT_SECONDS = 3.0
-CROSSWALK_STOP_TO_CROSS_DELAY_SECONDS = 1.5
+CROSSWALK_STOP_TO_CROSS_DELAY_SECONDS = 2.0
 CROSSWALK_ALIGNMENT_HOLD_SECONDS = 2.0
 PIPER_SPEED_FACTOR = float(os.getenv("WALKING_ASSISTANT_PIPER_SPEED", "1.12"))
 SHOW_CROSSWALK_DEBUG = os.getenv("WALKING_ASSISTANT_SHOW_DEBUG", "0").strip().lower() in {"1", "true", "yes"}
@@ -79,6 +79,8 @@ CROSSWALK_PROMPTS = [
     "white parallel zebra crossing stripes on dark surface",
     "miniature white zebra pedestrian crosswalk model",
     "white stripe lines of crosswalk pattern",
+    "black and white striped crosswalk mat on floor",
+    "small model crosswalk road with white stripes",
 ]
 CROSSWALK_LABELS = set(CROSSWALK_PROMPTS)
 
@@ -210,7 +212,7 @@ CLASS_MIN_CONF = {
     # 문버튼 및 오만 사물 오인식 방지 (임계값 상향)
     DOOR_BUTTON_PROMPT: 0.58,
     LEVER_HANDLE_PROMPT: 0.38,
-    ROUND_KNOB_PROMPT: 0.38,
+    ROUND_KNOB_PROMPT: 0.55,
     PULL_BAR_PROMPT: 0.38,
     PUSH_BAR_PROMPT: 0.42,
 
@@ -238,7 +240,7 @@ CLASS_MIN_CONF = {
     "closet": 0.32,
     **{label: 0.56 for label in HANGER_PROMPTS},
     "box": 0.55,
-    "desk": 0.45,
+    "desk": 0.55,
     "door": 0.22,
     "wooden door": 0.35,
     "steel door": 0.55,
@@ -1029,6 +1031,8 @@ def proximity_score(det, width, height):
     bottom = y2 / max(1, height)
     area = ((x2 - x1) * (y2 - y1)) / max(1, width * height)
     center = abs(((x1 + x2) / 2) - width / 2) / max(1, width)
+    if det[0] in CROSSWALK_LABELS:
+        return 0.45 * bottom + 0.30 + 0.25 * (1.0 - center)
     if det[0] in DOOR_COMPONENT_LABELS:
         return 0.70 * bottom + 0.20 + 0.10 * (1.0 - center)
     return 0.55 * bottom + 0.35 * min(area * 4.0, 1.0) + 0.10 * (1.0 - center)
@@ -1108,18 +1112,18 @@ def valid_geometry(det, width, height):
     aspect = bw / bh
     y2_ratio = y2 / max(1, height)
 
-    # 의자 및 자전거 기하학적 조건 빡세게 설정
+    if label == "desk":
+        return area_ratio >= 0.04 and bw >= width * 0.22 and bh >= height * 0.12
+
     if label == "chair":
         return area_ratio >= 0.015 and bh >= height * 0.12 and 0.35 <= aspect <= 2.2
 
     if label == "bicycle":
         return area_ratio >= 0.02 and bw >= width * 0.15 and 0.60 <= aspect <= 3.0
 
-    # 문버튼 오인식 억제 조건 (크기가 너무 크거나 길쭉한 거 제외)
     if label == DOOR_BUTTON_PROMPT:
         return bw >= 3 and bh >= 3 and area_ratio <= 0.015 and 0.4 <= aspect <= 2.5
 
-    # 손잡이 기하학 조건 강화
     if label in DOOR_COMPONENT_LABELS or label in DOOR_LOCK_LABELS or label in LOCK_TYPE_LABELS:
         return bw >= 4 and bh >= 4 and 0.0003 <= area_ratio <= 0.06 and 0.15 <= aspect <= 6.5
 
@@ -1154,11 +1158,11 @@ def valid_geometry(det, width, height):
                 and 0.75 <= aspect <= 4.0)
     if label in CROSSWALK_LABELS:
         return (
-            area_ratio >= 0.003
-            and bw >= width * 0.08
-            and bh >= height * 0.04
-            and aspect >= 0.7
-            and y2_ratio >= 0.45
+            0.002 <= area_ratio <= 0.45
+            and bw >= width * 0.05
+            and bh >= height * 0.03
+            and aspect >= 0.6
+            and y2_ratio >= 0.30
         )
     if label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
         return area_ratio >= 0.04 and bh >= height * 0.22 and 0.20 <= aspect <= 3.5
@@ -1265,7 +1269,6 @@ def guidance_for_detection(det, width, all_dets=None):
         return f"{pos} {korean_name}"
     return ""
 
-
 class CrosswalkFrameHold:
     def __init__(self):
         self.detections = []
@@ -1275,16 +1278,23 @@ class CrosswalkFrameHold:
         self.detections = []
         self.last_seen = None
 
-    def update(self, detections, now=None):
+    def update(self, detections, has_vehicles=False, now=None):
         now = time.monotonic() if now is None else now
         if detections:
             self.detections = list(detections)
             self.last_seen = now
-            return list(self.detections)
+            return list(self.detections), True
+
+        # 이미 횡단보도가 잡힌 상태에서 차량이 지나가며 줄무늬를 가린 경우 유지 시간 연장
+        if self.last_seen is not None and has_vehicles and (now - self.last_seen <= 4.0):
+            self.last_seen = now
+            return list(self.detections), False
+
         if self.last_seen is not None and now - self.last_seen <= CROSSWALK_EXIT_HOLD_SECONDS:
-            return list(self.detections)
+            return list(self.detections), False
+
         self.reset()
-        return []
+        return [], False
 
 
 class SituationMachine:
@@ -1295,7 +1305,6 @@ class SituationMachine:
 
     def update(self, detections, crosswalk_held_dets):
         now = time.monotonic()
-        
         has_crosswalk = (len(crosswalk_held_dets) > 0) or any(d[0] in CROSSWALK_LABELS for d in detections)
 
         if has_crosswalk:
@@ -1303,14 +1312,9 @@ class SituationMachine:
             self.state = "CROSSWALK"
             return self.state
 
-        if self.state == "CROSSWALK":
-            if (self.last_crosswalk_time is not None 
-                    and now - self.last_crosswalk_time < CROSSWALK_EXIT_HOLD_SECONDS):
-                return "CROSSWALK"
-            
-            self.state = "WALK"
-            self.last_crosswalk_time = None
-
+        # CrosswalkFrameHold가 이미 1.2초 유지를 담당하므로, 여기서는 중복 3초 대기 없이 즉시 WALK 전환
+        self.state = "WALK"
+        self.last_crosswalk_time = None
         return self.state
 
 
@@ -1509,13 +1513,14 @@ class DoorComponentConfirm:
 
     @staticmethod
     def is_inside_or_near_door(component, doors, max_pixel_margin=60):
-        # 문 프레임이 잡히지 않은 독립 상황 시 0.55 미만의 허수가 손잡이로 판별되는 것 금지
         if not doors:
             return component[1] >= 0.55
             
         cx, cy = (component[2] + component[4]) / 2.0, (component[3] + component[5]) / 2.0
         
         for door in doors:
+            if component[0] == ROUND_KNOB_PROMPT and door[1] < 0.15:
+                continue
             dx1, dy1, dx2, dy2 = door[2:6]
             if (dx1 - max_pixel_margin) <= cx <= (dx2 + max_pixel_margin) and \
                (dy1 - max_pixel_margin) <= cy <= (dy2 + max_pixel_margin):
@@ -1827,13 +1832,8 @@ def main():
                 bh = max(1, y2 - y1)
                 aspect = bw / bh
 
-                if label in {ROUND_KNOB_PROMPT, LEVER_HANDLE_PROMPT, PULL_BAR_PROMPT}:
-                    if aspect >= 1.15:
-                        label = LEVER_HANDLE_PROMPT
-                        conf = max(conf, 0.35)
-                    elif aspect <= 1.05:
-                        label = ROUND_KNOB_PROMPT
-                        conf = max(conf, 0.35)
+                if label in {LEVER_HANDLE_PROMPT, PULL_BAR_PROMPT} and aspect >= 1.25:
+                    label = LEVER_HANDLE_PROMPT
 
                 if label in {"refrigerator", "refrigerator in a kitchen", "large household refrigerator"}:
                     if bh >= h * 0.70:
@@ -1866,6 +1866,13 @@ def main():
             crosswalk_vehicles = deduplicate_vehicle_detections(crosswalk_vehicles)
             all_dets = deduplicate_detections(all_dets)
 
+            # 횡단보도가 잡혔거나 차량이 함께 있는 경우, 겹치는 'desk' 오인식 제거
+            if crosswalk_dets or crosswalk_vehicles:
+                all_dets = [
+                    d for d in all_dets
+                    if d[0] != "desk"
+                ]
+
             door_candidates_for_elevator = [d for d in all_dets if d[0] in DOOR_LABELS and d[1] >= DOOR_MIN_CONF]
             confirmed_elevators = elevator_confirm.update(all_dets, w, h, door_candidates_for_elevator)
 
@@ -1882,7 +1889,9 @@ def main():
 
             active = [d for d in filtered_for_guidance if walking_candidate(d, w, h) and valid_geometry(d, w, h)]
 
-            crosswalk_dets = crosswalk_frame_hold.update(crosswalk_dets)
+            crosswalk_dets, crosswalk_is_live = crosswalk_frame_hold.update(
+                crosswalk_dets, has_vehicles=(len(crosswalk_vehicles) > 0)
+            )
             state = machine.update(all_dets, crosswalk_dets)
 
             general_mode = state != "CROSSWALK"
@@ -1900,16 +1909,14 @@ def main():
                 traffic_status, urgent_stop = crosswalk_safety.update(crosswalk_vehicles, w, h)
                 speech.set_vehicle_priority(traffic_status == "WAIT")
 
-                if last_reported_state != "CROSSWALK":
-                    speech.say("crosswalk_front", "정면 횡단보도", force=True)
-
                 if traffic_status == "WAIT":
                     last_crosswalk_wait_time = time.monotonic()
 
                 if urgent_stop or (traffic_status == "WAIT" and last_traffic_status != "WAIT"):
                     speech.say_urgent("traffic_stop", "멈추세요")
                     last_guidance_key = "traffic:WAIT"
-                elif traffic_status == "CLEAR":
+                elif traffic_status == "CLEAR" and crosswalk_is_live:
+                    # crosswalk_is_live가 True일 때(실제 횡단보도가 화면에 보일 때)만 "건너세요" 안내
                     now = time.monotonic()
                     wait_finished = (
                         last_crosswalk_wait_time is None
@@ -1936,7 +1943,10 @@ def main():
 
                 obstacle_candidates = [
                     d for d in active
-                    if is_walk_obstacle(d) and (d[0] not in DOOR_LABELS or d in confirmed_doors or d[0] in DOOR_COMPONENT_LABELS)
+                    if is_walk_obstacle(d)
+                    and not (state == "CROSSWALK" and d[0] == "desk")
+                    and (d[0] not in DOOR_LABELS or d in confirmed_doors)
+                    and (d[0] not in DOOR_COMPONENT_LABELS or d in valid_components)
                 ]
                 primary = target_selector.update(obstacle_candidates, w, h)
 
