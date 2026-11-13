@@ -47,7 +47,7 @@ URGENT_SPEECH_COOLDOWN = 0.12
 
 CROSSWALK_VEHICLE_MIN_CONF = 0.10
 CROSSWALK_CLEAR_SECONDS = 2.0
-CROSSWALK_MIN_CONF = 0.20
+CROSSWALK_MIN_CONF = 0.18
 CROSSWALK_ENTER_CONFIRM_SECONDS = 0.4
 CROSSWALK_EXIT_HOLD_SECONDS = 3.0
 CROSSWALK_DETECTION_GAP_SECONDS = 2.0
@@ -91,8 +91,7 @@ STAIR_PROMPTS = [
 
 TEXT_SIGN_PROMPTS = [
     "push or pull sign sticker on a door",
-    "room number sign plate with numbers",
-    "door sign sticker with text",
+    "push pull door sign sticker with text",
 ]
 
 CAR_PROMPT = "real passenger car or automobile"
@@ -239,7 +238,7 @@ CLASS_MIN_CONF = {
     "closet": 0.32,
     **{label: 0.56 for label in HANGER_PROMPTS},
     "box": 0.55,
-    "desk": 0.40,
+    "desk": 0.45,
     "door": 0.22,
     "wooden door": 0.35,
     "steel door": 0.55,
@@ -473,72 +472,96 @@ KOREAN_LABELS = {
 class AsyncOCRReader:
     def __init__(self, speech_instance):
         self.speech = speech_instance
-        self.job_queue = queue.Queue(maxsize=1)
+        self.latest_roi = None
+        self.lock = threading.Lock()
+        self.has_job = threading.Event()
         self.running = True
+        self.last_ocr_time = 0.0
         self.thread = threading.Thread(target=self._worker, name="ocr-worker", daemon=True)
         self.thread.start()
 
     def request_ocr(self, roi_img):
-        if not HAS_PYTESSERACT or self.job_queue.full():
+        if not HAS_PYTESSERACT:
             return
-        try:
-            self.job_queue.put_nowait(roi_img)
-        except queue.Full:
-            pass
+        # 큐에 쌓지 않고 항상 가장 최신 크롭 이미지로 덮어씀 (밀림 원천 차단)
+        with self.lock:
+            self.latest_roi = roi_img
+        self.has_job.set()
 
-    def _preprocess_variants(self, roi_img):
+    def _preprocess(self, roi_img):
         gray = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
-        gray = cv2.resize(gray, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
-        denoised = cv2.bilateralFilter(gray, 9, 75, 75)
-        _, thresh1 = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        thresh2 = cv2.bitwise_not(thresh1)
-        return [thresh1, thresh2]
+        h, w = gray.shape[:2]
+
+        if max(h, w) < 150:
+            gray = cv2.resize(gray, (0, 0), fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+
+        blur = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # 호출될 때마다 정방향(검은글씨)과 반전(흰글씨)을 번갈아 반환 (속도 저하 없음)
+        self._toggle = not getattr(self, "_toggle", False)
+        return cv2.bitwise_not(binary) if self._toggle else binary
+
+    @staticmethod
+    def _match_door_sign(text):
+        # 영문 대문자 및 알파벳/숫자만 남김 (노이즈 특수문자 제거)
+        clean = "".join(c for c in text.upper() if c.isalnum())
+        if len(clean) < 3:
+            return None
+
+        # 로그에 찍힌 'USH' 같은 부분 일치까지 포함
+        pull_patterns = ("PULL", "ULL", "PUL", "FULL", "POLI", "PLLL")
+        push_patterns = ("PUSH", "USH", "PUS", "POSH", "BUSH", "PU5H")
+
+        if any(p in clean for p in pull_patterns):
+            return "pull"
+        if any(p in clean for p in push_patterns):
+            return "push"
+        return None
 
     def _worker(self):
-        config_text = r'--oem 3 --psm 7 -l kor+eng'
-        config_num = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
+        # PUSH, PULL에 쓰이는 알파벳(P, U, S, H, L)만 허용 -> 오인식 원천 차단
+        config = r'--oem 3 --psm 6 -l eng -c tessedit_char_whitelist=PUSHpushLl'
 
         while self.running:
-            try:
-                roi_img = self.job_queue.get(timeout=0.2)
-            except queue.Empty:
+            if not self.has_job.wait(timeout=0.2):
+                continue
+            self.has_job.clear()
+
+            # 최소 0.35초 간격 유지 (CPU 점유율 및 밀림 방지)
+            now = time.monotonic()
+            if now - self.last_ocr_time < 0.35:
                 continue
 
+            with self.lock:
+                roi_img = self.latest_roi
+                self.latest_roi = None
+
+            if roi_img is None:
+                continue
+
+            self.last_ocr_time = now
+
             try:
-                variants = self._preprocess_variants(roi_img)
-                found_sign = False
+                img = self._preprocess(roi_img)
+                text = pytesseract.image_to_string(img, config=config).strip()
+                if not text:
+                    continue
 
-                for img in variants:
-                    text = pytesseract.image_to_string(img, config=config_text).strip()
-                    upper_text = text.upper().replace(" ", "")
-
-                    if any(k in text for k in ["당기", "당기세요", "당림", "당"]) or any(k in upper_text for k in ["PULL", "FULL", "POLI"]):
-                        self.speech.say("ocr_pull", "문 당기세요")
-                        found_sign = True
-                        break
-                    elif any(k in text for k in ["미세요", "밀으세요", "미세", "밀어", "밀"]) or any(k in upper_text for k in ["PUSH", "POSH", "BUSH"]):
-                        self.speech.say("ocr_push", "문 미세요")
-                        found_sign = True
-                        break
-
-                if not found_sign:
-                    digits_list = []
-                    for img in variants:
-                        num_text = pytesseract.image_to_string(img, config=config_num).strip()
-                        digits = "".join([c for c in num_text if c.isdigit()])
-                        if digits:
-                            digits_list.append(digits)
-
-                    if digits_list:
-                        best_digits = max(digits_list, key=len)
-                        if len(best_digits) >= 1:
-                            self.speech.say(f"ocr_num_{best_digits}", f"숫자 {best_digits}")
+                detected = self._match_door_sign(text)
+                if detected == "pull":
+                    print(f"[OCR 성공: PULL] {repr(text)}", flush=True)
+                    self.speech.say("ocr_pull", "문 당기세요")
+                elif detected == "push":
+                    print(f"[OCR 성공: PUSH] {repr(text)}", flush=True)
+                    self.speech.say("ocr_push", "문 미세요")
 
             except Exception:
                 pass
 
     def close(self):
         self.running = False
+        self.has_job.set()
 
 
 class UltrasonicSensor:
@@ -1131,11 +1154,11 @@ def valid_geometry(det, width, height):
                 and 0.75 <= aspect <= 4.0)
     if label in CROSSWALK_LABELS:
         return (
-            area_ratio >= 0.005
-            and bw >= width * 0.10
-            and bh >= height * 0.05
-            and aspect >= 0.8
-            and y2_ratio >= 0.50
+            area_ratio >= 0.003
+            and bw >= width * 0.08
+            and bh >= height * 0.04
+            and aspect >= 0.7
+            and y2_ratio >= 0.45
         )
     if label in GLASS_DOOR_LABELS or label in GLASS_DOOR_TYPE_LABELS:
         return area_ratio >= 0.04 and bh >= height * 0.22 and 0.20 <= aspect <= 3.5
@@ -1824,12 +1847,14 @@ def main():
                 det = (label, conf, x1, y1, x2, y2)
 
                 if label in TEXT_SIGN_PROMPTS and conf >= CLASS_MIN_CONF.get(label, 0.18):
-                    padding = 15
-                    rx1, ry1 = max(0, x1 - padding), max(0, y1 - padding)
-                    rx2, ry2 = min(w, x2 + padding), min(h, y2 + padding)
-                    crop_img = frame[ry1:ry2, rx1:rx2]
-                    if crop_img.shape[0] > 10 and crop_img.shape[1] > 10:
-                        ocr_reader.request_ocr(crop_img)
+                    if bw >= 25 and bh >= 15:
+                        pad_x = max(15, int(bw * 0.15))
+                        pad_y = max(15, int(bh * 0.15))
+                        rx1, ry1 = max(0, x1 - pad_x), max(0, y1 - pad_y)
+                        rx2, ry2 = min(w, x2 + pad_x), min(h, y2 + pad_y)
+                        crop_img = frame[ry1:ry2, rx1:rx2]
+                        if crop_img.shape[0] > 15 and crop_img.shape[1] > 15:
+                            ocr_reader.request_ocr(crop_img)
                 
                 if conf >= class_min_conf(label) and valid_geometry(det, w, h):
                     all_dets.append(det)
