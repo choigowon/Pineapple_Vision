@@ -1,4 +1,7 @@
 import os
+os.environ.setdefault("YOLO_OFFLINE", "True")
+os.environ.setdefault("ULTRALYTICS_AUTOINSTALL", "False")
+os.environ.setdefault("WALKING_ASSISTANT_CPU_THREADS", "3")
 import time
 import threading
 import queue
@@ -179,7 +182,18 @@ SUITCASE_PROMPTS = {
     "wheeled travel suitcase",
 }
 
-LEVER_HANDLE_PROMPT = "metal horizontal lever handle on door"
+LEVER_HANDLE_PROMPTS = {
+    "door lever handle",
+    "lever door handle",
+    "silver or black door handle lever",
+    "black plastic lever door handle",
+    "black horizontal door lever handle",
+    "dark plastic door handle lever",
+    "matte black lever handle on door",
+    "horizontal door lever handle",
+    "black door handle",
+    "plastic door handle",
+}
 ROUND_KNOB_PROMPT = "round spherical doorknob"
 PULL_BAR_PROMPT = "long vertical metallic door handle bar"
 PUSH_BAR_PROMPT = "horizontal exit push bar installed across a door"
@@ -188,7 +202,7 @@ DOOR_BUTTON_PROMPT = "door push button switch"
 
 HANDLE_TYPE_LABELS = {
     ROUND_KNOB_PROMPT,
-    LEVER_HANDLE_PROMPT,
+    *LEVER_HANDLE_PROMPTS,
     PULL_BAR_PROMPT,
     PUSH_BAR_PROMPT,
     "recessed handle flush with a sliding door surface",
@@ -211,7 +225,7 @@ CLASS_MIN_CONF = {
 
     # 문버튼 및 오만 사물 오인식 방지 (임계값 상향)
     DOOR_BUTTON_PROMPT: 0.58,
-    LEVER_HANDLE_PROMPT: 0.38,
+    **{label: 0.18 for label in LEVER_HANDLE_PROMPTS},
     ROUND_KNOB_PROMPT: 0.55,
     PULL_BAR_PROMPT: 0.38,
     PUSH_BAR_PROMPT: 0.42,
@@ -316,7 +330,7 @@ PROMPTS = [
     "door", "entrance door", "interior door", "wooden door", "closed door", "open door",
     "steel door", "glass entrance door", "sliding glass door", "automatic glass door", "glass sliding door", "manual sliding glass door", "sliding door",
     
-    LEVER_HANDLE_PROMPT,
+    *sorted(LEVER_HANDLE_PROMPTS),
     ROUND_KNOB_PROMPT,
     DOOR_LOCK_PROMPT,
     PULL_BAR_PROMPT,
@@ -446,7 +460,7 @@ KOREAN_LABELS = {
     "stair landing": "계단",
 
     ROUND_KNOB_PROMPT: "원형 문고리",
-    LEVER_HANDLE_PROMPT: "레버 손잡이",
+    **{label: "레버 손잡이" for label in LEVER_HANDLE_PROMPTS},
     DOOR_LOCK_PROMPT: "도어락",
     PULL_BAR_PROMPT: "문손잡이",
     PUSH_BAR_PROMPT: "푸시바",
@@ -1125,7 +1139,7 @@ def valid_geometry(det, width, height):
         return bw >= 3 and bh >= 3 and area_ratio <= 0.015 and 0.4 <= aspect <= 2.5
 
     if label in DOOR_COMPONENT_LABELS or label in DOOR_LOCK_LABELS or label in LOCK_TYPE_LABELS:
-        return bw >= 4 and bh >= 4 and 0.0003 <= area_ratio <= 0.06 and 0.15 <= aspect <= 6.5
+        return bw >= 3 and bh >= 3 and 0.0001 <= area_ratio <= 0.08 and 0.15 <= aspect <= 7.5
 
     if label in SUITCASE_PROMPTS:
         return 0.012 <= area_ratio <= 0.45 and bh >= height * 0.12 and 0.30 <= aspect <= 2.2
@@ -1182,11 +1196,11 @@ def prepare_inference_frame(frame):
     if not AUTO_CLAHE:
         return frame
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    if float(np.mean(gray)) >= 75.0 and float(np.std(gray)) >= 25.0:
+    if float(np.mean(gray)) >= 115.0 and float(np.std(gray)) >= 35.0:
         return frame
     lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
     l_channel, a_channel, b_channel = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
     enhanced = cv2.merge((clahe.apply(l_channel), a_channel, b_channel))
     return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
 
@@ -1226,7 +1240,7 @@ def guidance_for_detection(det, width, all_dets=None):
                             has_button = True
 
         if nearby_handle:
-            if nearby_handle == LEVER_HANDLE_PROMPT:
+            if nearby_handle in LEVER_HANDLE_PROMPTS:
                 return f"{pos} {door_name}, 레버 손잡이를 내리세요"
             elif nearby_handle == ROUND_KNOB_PROMPT:
                 return f"{pos} {door_name}, 문고리를 돌리세요"
@@ -1244,7 +1258,7 @@ def guidance_for_detection(det, width, all_dets=None):
 
     # 3. 손잡이 단독 감지 (검증 통과 건만)
     if label in HANDLE_TYPE_LABELS:
-        if label == LEVER_HANDLE_PROMPT:
+        if label in LEVER_HANDLE_PROMPTS:
             return f"{pos} 레버 손잡이, 내리세요"
         elif label == ROUND_KNOB_PROMPT:
             return f"{pos} 원형 문고리"
@@ -1512,9 +1526,11 @@ class DoorComponentConfirm:
         self.previous = []
 
     @staticmethod
-    def is_inside_or_near_door(component, doors, max_pixel_margin=60):
+    def is_inside_or_near_door(component, doors, max_pixel_margin=80):
         if not doors:
-            return component[1] >= 0.55
+            if component[0] in LEVER_HANDLE_PROMPTS:
+                return component[1] >= 0.22
+            return component[1] >= 0.45
             
         cx, cy = (component[2] + component[4]) / 2.0, (component[3] + component[5]) / 2.0
         
@@ -1715,7 +1731,7 @@ def main():
         pass
     try:
         import torch
-        torch.set_num_threads(max(1, int(os.getenv("WALKING_ASSISTANT_CPU_THREADS", "2"))))
+        torch.set_num_threads(max(1, int(os.getenv("WALKING_ASSISTANT_CPU_THREADS", "3"))))
     except Exception as exc:
         print(f"PyTorch CPU 스레드 설정을 건너뜁니다: {exc}")
     
@@ -1832,8 +1848,8 @@ def main():
                 bh = max(1, y2 - y1)
                 aspect = bw / bh
 
-                if label in {LEVER_HANDLE_PROMPT, PULL_BAR_PROMPT} and aspect >= 1.25:
-                    label = LEVER_HANDLE_PROMPT
+                if label in {*LEVER_HANDLE_PROMPTS, PULL_BAR_PROMPT} and aspect >= 0.95:
+                    label = "black plastic lever door handle"
 
                 if label in {"refrigerator", "refrigerator in a kitchen", "large household refrigerator"}:
                     if bh >= h * 0.70:
