@@ -32,6 +32,13 @@ try:
 except ImportError:
     HAS_PYTESSERACT = False
 
+try:
+    import sounddevice as sd
+    import soundfile as sf
+    HAS_SOUNDDEVICE = True
+except ImportError:
+    HAS_SOUNDDEVICE = False
+
 # ============================================================
 # YOLOE 기반 상황형 보행 보조 Raspberry Pi 터미널 프로토타입
 # ============================================================
@@ -816,7 +823,6 @@ def shutdown_system():
         except Exception as exc:
             print(f"종료 명령 예외 ({' '.join(full_cmd)}): {exc}", flush=True)
 
-
 class Speech:
     def __init__(self):
         self.last_key = None
@@ -832,19 +838,16 @@ class Speech:
         self.process_lock = threading.Lock()
         self.active_processes = set()
         self.worker = None
-        
-        #self.aplay = shutil.which("aplay")
+
         self.aplay = shutil.which("pw-play")
-        self.alsa_device = os.getenv("WALKING_ASSISTANT_ALSA_DEVICE", "plughw:2,0")
-        self.espeak = shutil.which("espeak-ng") or shutil.which("espeak")
         self.cache_dir = Path(os.getenv(
             "WALKING_ASSISTANT_AUDIO_CACHE",
             str(Path(__file__).resolve().parent / "audio_cache")
         )).expanduser()
 
-        print("음성 출력: 사전 생성된 WAV 캐시 모드 (초기화 지연 0초)", flush=True)
+        print("음성 출력: WAV 캐시 모드 (pw-play)", flush=True)
 
-        if self.aplay or self.espeak:
+        if self.aplay:
             self.worker = threading.Thread(target=self._audio_worker, name="speech-audio", daemon=True)
             self.worker.start()
 
@@ -854,55 +857,29 @@ class Speech:
         return self.cache_dir / f"{digest}.wav"
 
     def _play_file(self, path):
-        devices = list(dict.fromkeys((self.alsa_device, "default")))
-        for device in devices:
-            proc = None
-            try:
-                proc = subprocess.Popen(
-                    #[self.aplay, "-q", "-D", device, str(path)],
-                    [self.aplay, str(path)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                )
-                with self.process_lock:
-                    self.active_processes.add(proc)
-                return_code = proc.wait()
-                if return_code == 0:
-                    return
-            except Exception:
-                pass
-            finally:
-                if proc is not None:
-                    with self.process_lock:
-                        self.active_processes.discard(proc)
-
-    def _run_espeak(self, text):
-        proc = subprocess.Popen(
-            [self.espeak, "-v", os.getenv("WALKING_ASSISTANT_ESPEAK_VOICE", "ko"),
-             "-s", os.getenv("WALKING_ASSISTANT_VOICE_SPEED", "180"), "--", text],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        with self.process_lock:
-            self.active_processes.add(proc)
+        if not self.aplay:
+            return
+        proc = None
         try:
-            proc.wait()
-        finally:
+            proc = subprocess.Popen(
+                [self.aplay, str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             with self.process_lock:
-                self.active_processes.discard(proc)
+                self.active_processes.add(proc)
+            proc.wait()
+        except Exception:
+            pass
+        finally:
+            if proc is not None:
+                with self.process_lock:
+                    self.active_processes.discard(proc)
 
     def _speak(self, text):
         cache_path = self._cache_path_for_text(text)
         if cache_path.is_file() and cache_path.stat().st_size > 44:
             self._play_file(cache_path)
-            return
-            
-        if self.espeak:
-            try:
-                self._run_espeak(text)
-                return
-            except Exception:
-                pass
 
     def _audio_worker(self):
         while not self.stopping.is_set():
@@ -924,32 +901,25 @@ class Speech:
             return
 
         if urgent:
-            # 1. 현재 "멈추세요"가 이미 재생 중이거나 큐에 대기 중이면 절대 끊지 않음
             if self.current_text == text:
                 return
-
-            # 2. 다른 일반 안내가 재생 중일 때만 프로세스를 종료하고 큐를 비움
             with self.process_lock:
                 for proc in tuple(self.active_processes):
                     if proc.poll() is None:
                         proc.terminate()
-
             while not self.jobs.empty():
                 try:
                     self.jobs.get_nowait()
                 except queue.Empty:
                     break
-
             try:
                 self.jobs.put_nowait(text)
             except queue.Full:
                 pass
             return
 
-        # 일반 안내는 현재 재생 중인 음성이나 대기 큐가 있으면 절대 끼어들지 않음
         if self.current_text is not None or not self.jobs.empty():
             return
-
         try:
             self.jobs.put_nowait(text)
         except queue.Full:
@@ -968,8 +938,6 @@ class Speech:
             return
         if self.ultrasonic_suppressed and not key.startswith(("crosswalk_", "traffic_", "stairs:", "ocr_")):
             return
-
-        # 현재 어떤 음성이든 재생 중이거나 대기 중이면 절대 말을 끊지 않음
         if self.current_text is not None or not self.jobs.empty():
             return
 
@@ -985,8 +953,6 @@ class Speech:
     def say_urgent(self, key, text):
         if not isinstance(text, str) or not text.strip():
             return
-
-        # 이미 "멈추세요"가 재생 중이면 스스로를 끊지 않고 유지
         if self.current_text == text:
             return
 
@@ -1422,35 +1388,22 @@ class SituationMachine:
         return self.state
 
 class CrosswalkSafety:
-    STATIONARY_SECONDS = 1.5      # 1.5초간 정지 유지 시 해당 프레임 영역 마스킹
-    PENDING_TOLERANCE = 0.08      # 손떨림 및 박스 지터 완화 허용 오차 (8%)
-    MASK_PADDING = 0.015          # 마스킹 테두리 여유분 (1.5%)
-    MAX_MASKS = 2                 # 화면 내 동시 정지 마스크 최대 2개로 제한 (인식 영역 잠식 방지)
+    STATIONARY_SECONDS = 1.5      # 1.5초간 오차범위 내 머무르면 해당 프레임 구역 마스킹
+    PENDING_TOLERANCE = 0.09      # 위치 오차 허용 범위 (9%)
+    PENDING_GRACE_SECONDS = 0.4   # 1프레임 미감지 시 타이머 초기화 유예 시간
+    MASK_PADDING = 0.02           # 마스킹 테두리 여유분 (2%)
+    MAX_MASKS = 2                 # 동시 마스크 최대 개수
+    EXIT_DIFF_THRESHOLD = 45.0    # 마스크 중심부 픽셀 변화량 임계값 (차가 완전히 빠져나감 감지)
 
     def __init__(self):
         self.status = "CLEAR"
-        self.masked_rects = []    # [(x1, y1, x2, y2), ...]
-        self.pending_frame = None
+        self.masks = []           # [{"rect": (x1, y1, x2, y2), "bg_gray": np.ndarray}, ...]
+        self.pending = None       # {"rect": ..., "start_time": float, "last_seen": float}
 
     def reset(self):
         self.status = "CLEAR"
-        self.masked_rects.clear()
-        self.pending_frame = None
-
-    def apply_frame_mask(self, frame):
-        """YOLO 추론 전에 정지 확정된 프레임 영역을 검은색으로 가림"""
-        if not self.masked_rects:
-            return frame
-
-        masked = frame.copy()
-        h, w = masked.shape[:2]
-        for rx1, ry1, rx2, ry2 in self.masked_rects:
-            px1 = max(0, int((rx1 - self.MASK_PADDING) * w))
-            py1 = max(0, int((ry1 - self.MASK_PADDING) * h))
-            px2 = min(w, int((rx2 + self.MASK_PADDING) * w))
-            py2 = min(h, int((ry2 + self.MASK_PADDING) * h))
-            masked[py1:py2, px1:px2] = 0
-        return masked
+        self.masks.clear()
+        self.pending = None
 
     @staticmethod
     def _norm_rect(det, w, h):
@@ -1474,48 +1427,113 @@ class CrosswalkSafety:
         return inter / (area_a + area_b - inter)
 
     @staticmethod
-    def _is_same_frame_region(rect_a, rect_b, tol):
+    def _is_within_tolerance(rect_a, rect_b, tol):
         acx, acy = (rect_a[0] + rect_a[2]) / 2.0, (rect_a[1] + rect_a[3]) / 2.0
         bcx, bcy = (rect_b[0] + rect_b[2]) / 2.0, (rect_b[1] + rect_b[3]) / 2.0
-        center_diff = ((bcx - acx) ** 2 + (bcy - acy) ** 2) ** 0.5
-        # 박스 크기는 YOLO 지터가 심하므로 중심점 이동 거리만 엄격히 체크
-        return center_diff <= tol
+        return ((bcx - acx) ** 2 + (bcy - acy) ** 2) ** 0.5 <= tol
 
-    def _register_mask(self, new_rect):
-        """새 정지 마스크 등록 시 겹치는 기존 마스크는 교체하고 최대 2개까지만 유지"""
-        self.masked_rects = [
-            r for r in self.masked_rects
-            if self._rect_iou(r, new_rect) < 0.10
+    @staticmethod
+    def _extract_core_gray(raw_frame, rect):
+        """손떨림 영향을 줄이기 위해 마스크 박스의 안쪽 중심부(60%)만 추출"""
+        h, w = raw_frame.shape[:2]
+        rw = rect[2] - rect[0]
+        rh = rect[3] - rect[1]
+        x1 = max(0, int((rect[0] + rw * 0.2) * w))
+        y1 = max(0, int((rect[1] + rh * 0.2) * h))
+        x2 = min(w, int((rect[2] - rw * 0.2) * w))
+        y2 = min(h, int((rect[3] - rh * 0.2) * h))
+        if x2 <= x1 + 2 or y2 <= y1 + 2:
+            return None
+        roi = raw_frame[y1:y2, x1:x2]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        return cv2.resize(gray, (24, 24), interpolation=cv2.INTER_AREA)
+
+    def prune_exited_masks(self, raw_frame):
+        """원본 프레임 기준으로 차가 마스크 구역을 완전히 벗어났을 때만 마스크 삭제"""
+        if not self.masks:
+            return
+        kept = []
+        for m in self.masks:
+            curr_gray = self._extract_core_gray(raw_frame, m["rect"])
+            if curr_gray is None or m["bg_gray"] is None:
+                continue
+            diff = float(np.mean(cv2.absdiff(curr_gray, m["bg_gray"])))
+            if diff < self.EXIT_DIFF_THRESHOLD:
+                kept.append(m)
+            else:
+                print("[횡단보도] 정지 차량 이동 감지 -> 마스크 해제", flush=True)
+        self.masks = kept
+
+    def _register_mask(self, raw_frame, new_rect):
+        bg_gray = self._extract_core_gray(raw_frame, new_rect)
+        self.masks = [
+            m for m in self.masks
+            if self._rect_iou(m["rect"], new_rect) < 0.15
         ]
-        if len(self.masked_rects) >= self.MAX_MASKS:
-            self.masked_rects.pop(0)
-        self.masked_rects.append(new_rect)
+        if len(self.masks) >= self.MAX_MASKS:
+            self.masks.pop(0)
+        self.masks.append({"rect": new_rect, "bg_gray": bg_gray})
+        print(f"[횡단보도] 정지 차량 프레임 마스킹 완료 (활성 마스크: {len(self.masks)}개)", flush=True)
 
-    def update(self, frame, vehicles):
+    def apply_frame_mask(self, target_frame):
+        """추론용 프레임에 활성 마스크 구역을 회색으로 덮어 인식에서 제외"""
+        if not self.masks:
+            return target_frame
+
+        masked = target_frame.copy()
+        h, w = masked.shape[:2]
+        for m in self.masks:
+            rx1, ry1, rx2, ry2 = m["rect"]
+            px1 = max(0, int((rx1 - self.MASK_PADDING) * w))
+            py1 = max(0, int((ry1 - self.MASK_PADDING) * h))
+            px2 = min(w, int((rx2 + self.MASK_PADDING) * w))
+            py2 = min(h, int((ry2 + self.MASK_PADDING) * h))
+            masked[py1:py2, px1:px2] = 110
+        return masked
+
+    def update(self, raw_frame, vehicles):
         now = time.monotonic()
-        h, w = frame.shape[:2]
+        h, w = raw_frame.shape[:2]
 
-        if not vehicles:
-            self.pending_frame = None
+        # 이미 마스킹된 구역과 겹치는 잔여 박스(경계선 오인식)는 차량 후보에서 한 번 더 걸러냄
+        filtered_vehicles = []
+        for det in vehicles:
+            r = self._norm_rect(det, w, h)
+            if any(self._rect_iou(r, m["rect"]) >= 0.25 for m in self.masks):
+                continue
+            filtered_vehicles.append(det)
+
+        if not filtered_vehicles:
+            # 0.4초 이내 잠깐 놓친 것은 타이머를 바로 지우지 않고 유예
+            if self.pending is not None and (now - self.pending["last_seen"] > self.PENDING_GRACE_SECONDS):
+                self.pending = None
             self.status = "CLEAR"
             return "CLEAR", False
 
-        target_det = max(vehicles, key=lambda d: (d[4] - d[2]) * (d[5] - d[3]))
-        curr_rect = self._norm_rect(target_det, w, h)
+        candidate_det = max(filtered_vehicles, key=lambda d: (d[4] - d[2]) * (d[5] - d[3]))
+        curr_rect = self._norm_rect(candidate_det, w, h)
 
-        if self.pending_frame is None or not self._is_same_frame_region(
-            self.pending_frame["rect"], curr_rect, self.PENDING_TOLERANCE
+        # 1) 새로운 위치의 차량 -> 즉시 "멈추세요"
+        if self.pending is None or not self._is_within_tolerance(
+            self.pending["rect"], curr_rect, self.PENDING_TOLERANCE
         ):
-            self.pending_frame = {
-                "rect": curr_rect,
-                "start_time": now,
-            }
+            self.pending = {"rect": curr_rect, "start_time": now, "last_seen": now}
             self.status = "WAIT"
             return "WAIT", True
 
-        if now - self.pending_frame["start_time"] >= self.STATIONARY_SECONDS:
-            self._register_mask(self.pending_frame["rect"])
-            self.pending_frame = None
+        self.pending["last_seen"] = now
+
+        # 2) 정지 대기 차량 외에 다른 위치에서 또 다른 차량이 동시에 포착됨 -> 즉시 "멈추세요"
+        for det in filtered_vehicles:
+            r = self._norm_rect(det, w, h)
+            if not self._is_within_tolerance(self.pending["rect"], r, self.PENDING_TOLERANCE):
+                self.status = "WAIT"
+                return "WAIT", True
+
+        # 3) 1.5초간 오차범위 내 정지 확정 -> 원본 프레임 기준으로 스냅샷 저장 및 마스킹 등록
+        if now - self.pending["start_time"] >= self.STATIONARY_SECONDS:
+            self._register_mask(raw_frame, self.pending["rect"])
+            self.pending = None
             self.status = "CLEAR"
             return "CLEAR", False
 
@@ -1951,8 +1969,10 @@ def main():
             h, w = frame.shape[:2]
             inference_frame = prepare_inference_frame(frame)
 
-            # [핵심] 횡단보도 모드일 때, 이미 정지 확정된 프레임 영역은 검은색으로 가려서 모델 인식 범위에서 아예 제외
             if machine.state == "CROSSWALK":
+                # 1) 원본 frame 기준으로 차가 빠져나갔는지 먼저 확인
+                crosswalk_safety.prune_exited_masks(frame)
+                # 2) 남아있는 마스크를 추론용 프레임에 적용
                 inference_frame = crosswalk_safety.apply_frame_mask(inference_frame)
 
             sync_cuda_for_profile(model)
@@ -1971,28 +1991,44 @@ def main():
             crosswalk_vehicles = []
             crosswalk_dets = []
             ocr_triggered = False
+            is_crosswalk_mode = (machine.state == "CROSSWALK")
 
             for box in result.boxes:
                 cls_id = int(box.cls[0])
                 conf = float(box.conf[0])
                 label = label_of(result, cls_id)
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                
+
                 bw = max(1, x2 - x1)
                 bh = max(1, y2 - y1)
                 aspect = bw / bh
 
+                # 킥보드 오인식 보정 (횡단보도 모드에서도 차량류로 유지)
+                if label in {"scooter", "kick scooter", SCOOTER_PROMPT, PLAIN_SCOOTER_PROMPT}:
+                    if aspect >= 1.0 or bh < h * 0.08:
+                        label = "toy car"
+                        conf = max(conf, 0.20)
+
+                # [1번 해결] 횡단보도 모드일 때는 차량(모형 포함)과 횡단보도만 인식하고 나머지 연산 전부 스킵
+                if is_crosswalk_mode:
+                    if label not in VEHICLE_LABELS and label not in CROSSWALK_LABELS:
+                        continue
+                    det = (label, conf, x1, y1, x2, y2)
+                    if conf >= class_min_conf(label) and valid_geometry(det, w, h):
+                        all_dets.append(det)
+                        if label in VEHICLE_LABELS and conf >= CROSSWALK_VEHICLE_MIN_CONF:
+                            crosswalk_vehicles.append(det)
+                        elif label in CROSSWALK_LABELS and conf >= CROSSWALK_MIN_CONF:
+                            crosswalk_dets.append(det)
+                    continue
+
+                # --- 이하 기존 WALK 모드 전용 처리 ---
                 if label in {*LEVER_HANDLE_PROMPTS, PULL_BAR_PROMPT} and aspect >= 0.95 and (bw * bh) / (w * h) <= 0.04:
                     label = "black plastic lever door handle"
 
                 if label in {"refrigerator", "refrigerator in a kitchen", "large household refrigerator"}:
                     if bh >= h * 0.70:
                         label = "steel door"
-
-                if label in {"scooter", "kick scooter", SCOOTER_PROMPT, PLAIN_SCOOTER_PROMPT}:
-                    if aspect >= 1.0 or bh < h * 0.08:
-                        label = "toy car"
-                        conf = max(conf, 0.20)
 
                 det = (label, conf, x1, y1, x2, y2)
 
@@ -2015,7 +2051,7 @@ def main():
                     if crop_img.shape[0] > 20 and crop_img.shape[1] > 20:
                         ocr_reader.request_ocr(crop_img)
                         ocr_triggered = True
-                
+
                 if conf >= class_min_conf(label) and valid_geometry(det, w, h):
                     all_dets.append(det)
                     if label in VEHICLE_LABELS and conf >= CROSSWALK_VEHICLE_MIN_CONF:
@@ -2075,7 +2111,7 @@ def main():
                 crosswalk_dets,
                 w,
                 has_vehicles=(len(crosswalk_vehicles) > 0),
-                has_masked_zones=(len(crosswalk_safety.masked_rects) > 0),
+                has_masked_zones=(len(crosswalk_safety.masks) > 0),
             )
 
             general_mode = state != "CROSSWALK"
@@ -2090,15 +2126,18 @@ def main():
                 speech.set_vehicle_priority(traffic_status == "WAIT")
 
                 if traffic_status == "WAIT":
-                    # 차량 감지/이동 중에는 계속 타이머를 리셋하여 성급한 "건너세요" 차단
                     last_stop_announce_time = time.monotonic()
 
                 if last_reported_state != "CROSSWALK":
                     if traffic_status == "WAIT":
-                        speech.say_urgent("traffic_stop", "멈추세요")
+                        combined_text = "정면 횡단보도, 멈추세요"
+                        if speech._cache_path_for_text(combined_text).is_file():
+                            speech.say_urgent("traffic_stop", combined_text)
+                        else:
+                            speech.say_urgent("traffic_stop", "멈추세요")
                         last_guidance_key = "traffic:WAIT"
                     else:
-                        speech.say("crosswalk_front", "정면 횡단보도", force=False)
+                        speech.say("crosswalk_front", "정면 횡단보도", force=True)
                         last_crosswalk_clear_announce = 0.0
                 else:
                     if urgent_stop or (traffic_status == "WAIT" and last_traffic_status != "WAIT"):
@@ -2106,7 +2145,6 @@ def main():
                         last_guidance_key = "traffic:WAIT"
                     elif traffic_status == "CLEAR":
                         now = time.monotonic()
-                        # "멈추세요" 이후 2.5초간 안전(CLEAR) 상태가 유지된 경우에만 "건너세요" 출력
                         if (now - last_stop_announce_time >= STOP_TO_CROSS_GAP_SECONDS) and (
                             last_crosswalk_clear_announce == 0.0
                             or now - last_crosswalk_clear_announce >= CROSSWALK_REPEAT_SECONDS
