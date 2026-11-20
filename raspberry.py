@@ -606,7 +606,8 @@ class UltrasonicSensor:
         self._beep_lock = threading.Lock()
         self._last_beep = 0.0
         self._beep_interval = 0.65
-        self._aplay = shutil.which("aplay")
+        #self._aplay = shutil.which("aplay")
+        self._aplay = shutil.which("pw-play")
         self._alsa_device = os.getenv("WALKING_ASSISTANT_ALSA_DEVICE", "plughw:2,0")
         self._beep_samples = self._make_double_beep()
         try:
@@ -664,8 +665,9 @@ class UltrasonicSensor:
             return
         try:
             subprocess.run(
-                [self._aplay, "-q", "-D", self._alsa_device, "-t", "raw",
-                 "-f", "S16_LE", "-r", "24000", "-c", "1"],
+                #[self._aplay, "-q", "-D", self._alsa_device, "-t", "raw",
+                # "-f", "S16_LE", "-r", "24000", "-c", "1"],
+                [self._aplay, "--raw", "--rate", "16000", "--channels", "1", "--format", "s16", "-"],
                 input=self._beep_samples,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -831,7 +833,8 @@ class Speech:
         self.active_processes = set()
         self.worker = None
         
-        self.aplay = shutil.which("aplay")
+        #self.aplay = shutil.which("aplay")
+        self.aplay = shutil.which("pw-play")
         self.alsa_device = os.getenv("WALKING_ASSISTANT_ALSA_DEVICE", "plughw:2,0")
         self.espeak = shutil.which("espeak-ng") or shutil.which("espeak")
         self.cache_dir = Path(os.getenv(
@@ -856,7 +859,8 @@ class Speech:
             proc = None
             try:
                 proc = subprocess.Popen(
-                    [self.aplay, "-q", "-D", device, str(path)],
+                    #[self.aplay, "-q", "-D", device, str(path)],
+                    [self.aplay, str(path)],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                 )
