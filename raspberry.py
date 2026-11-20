@@ -2,6 +2,8 @@ import os
 os.environ.setdefault("YOLO_OFFLINE", "True")
 os.environ.setdefault("ULTRALYTICS_AUTOINSTALL", "False")
 os.environ.setdefault("WALKING_ASSISTANT_CPU_THREADS", "3")
+os.environ.setdefault("OMP_NUM_THREADS", "3")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 import time
 import threading
 import queue
@@ -586,7 +588,7 @@ class UltrasonicSensor:
     TRIG_PIN = 23
     ECHO_PIN = 24
     MAX_DISTANCE_CM = 400.0
-    WARNING_DISTANCE_CM = 50.0
+    WARNING_DISTANCE_CM = 30.0
 
     def __init__(self):
         self.gpio = None
@@ -776,19 +778,31 @@ class ShutdownButton:
 
 
 def shutdown_system():
-    shutdown_cmd = shutil.which("shutdown") or "/sbin/shutdown"
-    command = ([shutdown_cmd, "-h", "now"] if os.geteuid() == 0
-               else ["sudo", "-n", shutdown_cmd, "-h", "now"])
-    try:
-        result = subprocess.run(
-            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, timeout=5.0, check=False,
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "권한이 거부되었습니다.").strip()
-            print(f"라즈베리파이 종료 명령 실패: {detail}", flush=True)
-    except Exception as exc:
-        print(f"라즈베리파이 종료 명령 실행 실패: {exc}", flush=True)
+    commands = [
+        ["systemctl", "poweroff"],
+        ["shutdown", "-h", "now"],
+        ["/usr/sbin/shutdown", "-h", "now"],
+        ["/sbin/shutdown", "-h", "now"],
+    ]
+    is_root = os.geteuid() == 0
+
+    for cmd in commands:
+        full_cmd = cmd if is_root else ["sudo", "-n", *cmd]
+        try:
+            result = subprocess.run(
+                full_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3.0,
+                check=False,
+            )
+            if result.returncode == 0:
+                return
+            detail = (result.stderr or result.stdout or "").strip()
+            print(f"종료 명령 실패 ({' '.join(full_cmd)}): {detail}", flush=True)
+        except Exception as exc:
+            print(f"종료 명령 예외 ({' '.join(full_cmd)}): {exc}", flush=True)
 
 
 class Speech:
@@ -2126,6 +2140,9 @@ def main():
         shutdown_button.close()
         ultrasonic.close()
         speech.close()
+        if shutdown_requested.is_set():
+            shutdown_system()
+
         cap.release()
 
 if __name__ == "__main__":
