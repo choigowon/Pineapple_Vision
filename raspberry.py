@@ -490,13 +490,14 @@ class AsyncOCRReader:
         self.has_job = threading.Event()
         self.running = True
         self.last_ocr_time = 0.0
+        self.last_detected_time = 0.0
+        self.last_detected_type = None
         self.thread = threading.Thread(target=self._worker, name="ocr-worker", daemon=True)
         self.thread.start()
 
     def request_ocr(self, roi_img):
         if not HAS_PYTESSERACT:
             return
-        # 큐에 쌓지 않고 항상 가장 최신 크롭 이미지로 덮어씀 (밀림 원천 차단)
         with self.lock:
             self.latest_roi = roi_img
         self.has_job.set()
@@ -504,44 +505,55 @@ class AsyncOCRReader:
     def _preprocess(self, roi_img):
         gray = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
 
-        # 1. 3배 확대로 작은 PUSH/PULL 글자 디테일 확보
-        gray = cv2.resize(gray, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+        # 1. 적정 해상도 스케일링 (너무 작으면 3배, 크면 2배)
+        h, w = gray.shape[:2]
+        scale = 3.0 if max(h, w) < 120 else 2.0
+        gray = cv2.resize(gray, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
 
-        # 2. 언샤프 마스킹(선명화)으로 흐릿한 글자 테두리 강조
-        blur = cv2.GaussianBlur(gray, (0, 0), 2.0)
+        # 2. CLAHE 대비 보정 + 가우시안 블러로 고주파 노이즈 억제
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+        gray = clahe.apply(gray)
+        blur = cv2.GaussianBlur(gray, (3, 3), 0)
         sharp = cv2.addWeighted(gray, 1.5, blur, -0.5, 0)
 
-        # 3. Otsu 이진화 + 정방향/반전 토글
-        _, binary = cv2.threshold(sharp, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # 3. 정방향/반전 Otsu 이진화 교차 적용
         self._toggle = not getattr(self, "_toggle", False)
-        result = cv2.bitwise_not(binary) if self._toggle else binary
+        thresh_flag = cv2.THRESH_BINARY_INV if self._toggle else cv2.THRESH_BINARY
+        _, binary = cv2.threshold(sharp, 0, 255, thresh_flag + cv2.THRESH_OTSU)
 
-        # 4. Tesseract 인식용 흰색 여백 추가
-        return cv2.copyMakeBorder(result, 15, 15, 15, 15, cv2.BORDER_CONSTANT, value=255)
+        # 4. 모폴로지 연산으로 문틀 선이나 점 같은 미세 잡음 제거
+        kernel = np.ones((2, 2), np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+
+        # 5. 흰색 여백 추가
+        return cv2.copyMakeBorder(binary, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
 
     @staticmethod
     def _match_door_sign(text):
-        clean = "".join(c for c in text.upper() if c.isalnum())
-        if len(clean) < 2:  # 3글자 -> 2글자 이상 부분 일치 허용으로 완화
+        # 줄/단어 단위로 분리하여 1~2글자짜리 배경 잡음('A', 'F', 'YF', 'CD' 등) 제거
+        tokens = [
+            "".join(c for c in word.upper() if c.isalpha())
+            for word in text.split()
+        ]
+        meaningful_words = [w for w in tokens if len(w) >= 3]
+        joined = "".join(meaningful_words)
+
+        if len(joined) < 3:
             return None
 
-        pull_patterns = ("PULL", "ULL", "PUL", "FULL", "POLI", "PLLL", "PLL", "PU")
-        push_patterns = ("PUSH", "USH", "PUS", "POSH", "BUSH", "PU5H", "PSH", "SH")
+        # 3~4글자 이상의 신뢰도 높은 패턴만 허용 (오탐 방지)
+        pull_patterns = ("PULL", "ULL", "PUL", "PLL", "FULL", "POLL")
+        push_patterns = ("PUSH", "USH", "PUS", "PSH", "POSH", "BUSH")
 
-        # 'PU' 겹침 방지를 위해 구체적 패턴 우선 검사
-        if any(p in clean for p in ("PULL", "ULL", "PUL", "PLL", "PLLL")):
+        if any(p in joined for p in pull_patterns):
             return "pull"
-        if any(p in clean for p in ("PUSH", "USH", "PUS", "PSH", "SH")):
+        if any(p in joined for p in push_patterns):
             return "push"
         return None
 
     def _worker(self):
-        # --psm 6(문단)과 --psm 11(흩어진 단어 추출)을 번갈아 사용하여 배경 노이즈 속 글씨 포착 극대화
-        configs = [
-            r'--oem 3 --psm 6 -l eng',
-            r'--oem 3 --psm 11 -l eng',
-        ]
-        cfg_idx = 0
+        # --psm 6(단일 텍스트 블록) 위주로 사용하고, 영문 대문자만 허용
+        config = r'--oem 3 --psm 6 -l eng -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
         while self.running:
             if not self.has_job.wait(timeout=0.2):
@@ -549,7 +561,7 @@ class AsyncOCRReader:
             self.has_job.clear()
 
             now = time.monotonic()
-            if now - self.last_ocr_time < 0.30:  # 0.35 -> 0.30초로 반응 속도 소폭 상향
+            if now - self.last_ocr_time < 0.25:
                 continue
 
             with self.lock:
@@ -560,8 +572,6 @@ class AsyncOCRReader:
                 continue
 
             self.last_ocr_time = now
-            config = configs[cfg_idx % 2]
-            cfg_idx += 1
 
             try:
                 img = self._preprocess(roi_img)
@@ -579,10 +589,10 @@ class AsyncOCRReader:
 
             except Exception:
                 pass
+
     def close(self):
         self.running = False
         self.has_job.set()
-
 
 class UltrasonicSensor:
     TRIG_PIN = 23
@@ -1992,11 +2002,11 @@ def main():
                         if crop_img.shape[0] > 15 and crop_img.shape[1] > 15:
                             ocr_reader.request_ocr(crop_img)
                             ocr_triggered = True
-                elif label in DOOR_LABELS and conf >= 0.25:
-                    rx1 = max(0, x1 + int(bw * 0.20))
-                    rx2 = min(w, x2 - int(bw * 0.20))
-                    ry1 = max(0, y1 + int(bh * 0.30))
-                    ry2 = min(h, y2 - int(bh * 0.30))
+                elif label in DOOR_LABELS and conf >= 0.20:
+                    rx1 = max(0, x1 + int(bw * 0.10))
+                    rx2 = min(w, x2 - int(bw * 0.10))
+                    ry1 = max(0, y1 + int(bh * 0.15))
+                    ry2 = min(h, y2 - int(bh * 0.15))
                     crop_img = frame[ry1:ry2, rx1:rx2]
                     if crop_img.shape[0] > 20 and crop_img.shape[1] > 20:
                         ocr_reader.request_ocr(crop_img)
