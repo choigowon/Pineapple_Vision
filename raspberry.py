@@ -232,7 +232,7 @@ CLASS_MIN_CONF = {
 
     # 문버튼 및 오만 사물 오인식 방지 (임계값 상향)
     DOOR_BUTTON_PROMPT: 0.58,
-    **{label: 0.25 for label in LEVER_HANDLE_PROMPTS},
+    **{label: 0.28 for label in LEVER_HANDLE_PROMPTS},
     ROUND_KNOB_PROMPT: 0.65,
     PULL_BAR_PROMPT: 0.38,
     PUSH_BAR_PROMPT: 0.42,
@@ -250,9 +250,9 @@ CLASS_MIN_CONF = {
     "wall covered with square ceramic tiles": 0.44,
     "close-up of a tiled wall": 0.44,
     "wall with a grid of square tiles": 0.44,
-    "refrigerator": 0.60,
-    "refrigerator in a kitchen": 0.60,
-    "large household refrigerator": 0.65,
+    "refrigerator": 0.95,
+    "refrigerator in a kitchen": 0.90,
+    "large household refrigerator": 0.85,
     "shelf": 0.70,
     "bookshelf": 0.70,
     "storage shelf": 0.70,
@@ -264,7 +264,7 @@ CLASS_MIN_CONF = {
     "desk": 0.60,
     "door": 0.22,
     "wooden door": 0.35,
-    **{label: 0.68 for label in STEEL_DOOR_LABELS},
+    **{label: 0.75 for label in STEEL_DOOR_LABELS},
     "glass entrance door": 0.30,
     "automatic glass door": 0.42,
     "digital keypad smart door lock on a door panel": 0.28,
@@ -274,20 +274,20 @@ CLASS_MIN_CONF = {
     CAR_DISTANT_PROMPT: 0.30,
     CAR_FAR_PROMPT: 0.25,
     SCOOTER_PROMPT: 0.25,
-    MOTORCYCLE_PROMPT: 0.17,
-    MOTORCYCLE_RIDER_PROMPT: 0.15,
-    MOTORCYCLE_DISTANT_PROMPT: 0.15,
-    MOTORCYCLIST_PROMPT: 0.15,
-    PLAIN_SCOOTER_PROMPT: 0.25,
-    SCOOTER_RIDER_PROMPT: 0.15,
-    "motorcycle": 0.17,
-    "motorbike": 0.17,
+    MOTORCYCLE_PROMPT: 0.55,
+    MOTORCYCLE_RIDER_PROMPT: 0.55,
+    MOTORCYCLE_DISTANT_PROMPT: 0.55,
+    MOTORCYCLIST_PROMPT: 0.55,
+    PLAIN_SCOOTER_PROMPT: 0.55,
+    SCOOTER_RIDER_PROMPT: 0.55,
+    "motorcycle": 0.55,
+    "motorbike": 0.55,
     "car": 0.25,
-    "scooter": 0.25,
-    "kick scooter": 0.25,
-    "electric scooter": 0.17,
-    "electric kick scooter": 0.17,
-    "person": 0.42,
+    "scooter": 0.55,
+    "kick scooter": 0.55,
+    "electric scooter": 0.57,
+    "electric kick scooter": 0.57,
+    "person": 0.95,
     "stairs": 0.34,
     "staircase": 0.34,
     "stairway steps": 0.34,
@@ -309,6 +309,7 @@ CLASS_MIN_CONF = {
     "do not lean on elevator door sticker": ELEVATOR_STICKER_MIN_CONF,
     "fall hazard sticker on elevator door": ELEVATOR_STICKER_MIN_CONF,
     "elevator safety notice": ELEVATOR_STICKER_MIN_CONF,
+    "tree": 0.45,
 }
 
 for prompt in CROSSWALK_PROMPTS:
@@ -828,7 +829,7 @@ class Speech:
         self.last_key = None
         self.last_submit_time = 0.0
         self.vehicle_priority = False
-        self.ultrasonic_suppressed = False
+        #self.ultrasonic_suppressed = False
         self.last_urgent_key = None
         self.last_urgent_submit = 0.0
         self.current_text = None
@@ -928,16 +929,16 @@ class Speech:
     def set_vehicle_priority(self, active):
         self.vehicle_priority = bool(active)
 
-    def set_ultrasonic_suppressed(self, active):
-        self.ultrasonic_suppressed = bool(active)
+    #def set_ultrasonic_suppressed(self, active):
+    #    self.ultrasonic_suppressed = bool(active)
 
     def say(self, key, text, force=False):
         if not isinstance(text, str) or not text.strip():
             return
         if self.vehicle_priority and not key.startswith(("crosswalk_", "traffic_")):
             return
-        if self.ultrasonic_suppressed and not key.startswith(("crosswalk_", "traffic_", "stairs:", "ocr_")):
-            return
+        #if self.ultrasonic_suppressed and not key.startswith(("crosswalk_", "traffic_", "stairs:", "ocr_")):
+        #    return
         if self.current_text is not None or not self.jobs.empty():
             return
 
@@ -1389,9 +1390,9 @@ class SituationMachine:
 
 class CrosswalkSafety:
     STATIONARY_SECONDS = 1.5      # 1.5초간 오차범위 내 머무르면 해당 프레임 구역 마스킹
-    PENDING_TOLERANCE = 0.09      # 위치 오차 허용 범위 (9%)
-    PENDING_GRACE_SECONDS = 0.4   # 1프레임 미감지 시 타이머 초기화 유예 시간
-    MASK_PADDING = 0.02           # 마스킹 테두리 여유분 (2%)
+    PENDING_TOLERANCE = 0.13      # 위치 오차 허용 범위 (9%)
+    PENDING_GRACE_SECONDS = 0.6   # 1프레임 미감지 시 타이머 초기화 유예 시간
+    MASK_PADDING = 0.03           # 마스킹 테두리 여유분 (2%)
     MAX_MASKS = 2                 # 동시 마스크 최대 개수
     EXIT_DIFF_THRESHOLD = 45.0    # 마스크 중심부 픽셀 변화량 임계값 (차가 완전히 빠져나감 감지)
 
@@ -1944,7 +1945,7 @@ def main():
     last_reported_state = "WALK"
     pause_cleanup_done = False
     last_stop_announce_time = 0.0
-    STOP_TO_CROSS_GAP_SECONDS = 2.0
+    STOP_TO_CROSS_GAP_SECONDS = 1.8
 
     try:
         while not shutdown_requested.is_set():
@@ -2116,9 +2117,9 @@ def main():
 
             general_mode = state != "CROSSWALK"
             ultrasonic_distance_cm = ultrasonic.measure_cm() if general_mode else None
-            speech.set_ultrasonic_suppressed(
-                general_mode and ultrasonic_distance_cm is not None and ultrasonic_distance_cm >= UltrasonicSensor.MAX_DISTANCE_CM
-            )
+            #speech.set_ultrasonic_suppressed(
+            #    general_mode and ultrasonic_distance_cm is not None and ultrasonic_distance_cm >= UltrasonicSensor.MAX_DISTANCE_CM
+            #)
             ultrasonic.update_warning(ultrasonic_distance_cm, active=general_mode)
 
             if state == "CROSSWALK":
